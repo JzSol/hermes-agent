@@ -59,7 +59,7 @@ const resolveSidecarUrl = () => {
   return raw ? raw : null
 }
 
-const resolvePython = (root: string) => {
+export const resolvePython = (root: string) => {
   const configured = process.env.HERMES_PYTHON?.trim() || process.env.PYTHON?.trim()
 
   if (configured) {
@@ -73,8 +73,10 @@ const resolvePython = (root: string) => {
     venv && resolve(venv, 'Scripts/python.exe'),
     resolve(root, '.venv/bin/python'),
     resolve(root, '.venv/bin/python3'),
+    resolve(root, '.venv/Scripts/python.exe'),
     resolve(root, 'venv/bin/python'),
-    resolve(root, 'venv/bin/python3')
+    resolve(root, 'venv/bin/python3'),
+    resolve(root, 'venv/Scripts/python.exe')
   ].find(p => p && existsSync(p))
 
   return hit || (process.platform === 'win32' ? 'python' : 'python3')

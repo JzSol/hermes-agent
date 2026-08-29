@@ -41,6 +41,9 @@ def test_guest_barriers_apply_configured_synchronous(monkeypatch, tmp_path):
 
 
 def test_guest_barriers_leave_synchronous_alone_when_unset(monkeypatch, tmp_path):
+    # Darwin deliberately enforces FULL even without an operator override.
+    # This test isolates the config-unset behavior from that platform floor.
+    monkeypatch.setattr(hermes_state.sys, "platform", "linux")
     _config(monkeypatch, {})
     conn = sqlite3.connect(tmp_path / "state.db")
     try:

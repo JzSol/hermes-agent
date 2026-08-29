@@ -20,13 +20,22 @@ def _make_executable(path: Path, content: str) -> None:
 
 
 def _setup_path_function() -> str:
-    match = re.search(
-        r"^setup_path\(\) \{\n.*?^}\n",
-        INSTALL_SH.read_text(encoding="utf-8"),
+    text = INSTALL_SH.read_text(encoding="utf-8")
+    guard = re.search(
+        r"^launcher_is_hermes_managed\(\) \{.*?^\}\n\n"
+        r"launcher_target_is_replaceable\(\) \{.*?^\}\n\n"
+        r"prepare_managed_launcher\(\) \{.*?^\}\n",
+        text,
         re.MULTILINE | re.DOTALL,
     )
-    assert match is not None, "setup_path function not found in scripts/install.sh"
-    return match.group(0)
+    setup = re.search(
+        r"^setup_path\(\) \{\n.*?^}\n",
+        text,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert guard is not None, "launcher ownership guard not found in scripts/install.sh"
+    assert setup is not None, "setup_path function not found in scripts/install.sh"
+    return guard.group(0) + "\n" + setup.group(0)
 
 
 def test_venv_launcher_bypasses_uv_console_script_that_requires_realpath(tmp_path: Path) -> None:
@@ -63,6 +72,8 @@ def test_venv_launcher_bypasses_uv_console_script_that_requires_realpath(tmp_pat
             'get_command_link_display_dir() { printf "%s" "$COMMAND_LINK_DIR"; }',
             "log_info() { :; }",
             "log_success() { :; }",
+            "log_warn() { :; }",
+            "log_error() { :; }",
             _setup_path_function(),
             "setup_path",
         ]

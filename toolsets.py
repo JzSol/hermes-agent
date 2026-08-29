@@ -138,6 +138,15 @@ TOOLSETS = {
         "tools": ["video_analyze"],
         "includes": []
     },
+
+    # Explicit opt-in only.  Do not include this mutating, profile-scoped tool
+    # in webhook, gateway, cron, or other platform composites: those surfaces
+    # can receive untrusted content without an interactive user present.
+    "watchlist": {
+        "description": "Local, profile-scoped IDO watchlist management",
+        "tools": ["watchlist"],
+        "includes": [],
+    },
     
     "image_gen": {
         "description": "Creative generation tools (images)",

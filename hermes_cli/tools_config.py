@@ -120,6 +120,7 @@ CONFIGURABLE_TOOLSETS = [
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
     ("yuanbao",          "🤖 Yuanbao",                  "group info, member queries, DM"),
     ("computer_use",     "🖱️  Computer Use (macOS/Windows/Linux)", "background desktop control via cua-driver"),
+    ("watchlist",        "📋 IDO Watchlist",             "local IDO diligence and launch reminders"),
 ]
 
 
@@ -138,9 +139,10 @@ def gui_toolset_label(label: str) -> str:
     return text
 
 
-# Toolsets that are OFF by default for new installs.
-# They're still in _HERMES_CORE_TOOLS (available at runtime if enabled),
-# but the setup checklist won't pre-select them for first-time users.
+# Toolsets that are OFF by default for new installs. The setup checklist does
+# not pre-select them for first-time users. Most are also core tools; narrow
+# leaf toolsets such as watchlist stay outside core and become reachable only
+# after an explicit platform opt-in.
 #
 # Video gen is off by default — it's a niche, paid, slow feature. Users
 # who want it opt in via `hermes tools` → Video Generation, which walks
@@ -152,7 +154,7 @@ def gui_toolset_label(label: str) -> str:
 # `hermes tools` → X (Twitter) Search setup walks users through credential
 # setup. The tool's check_fn means the schema still won't appear to the
 # model if the credential later goes missing or expires.
-_DEFAULT_OFF_TOOLSETS = {"homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search", "a2a"}
+_DEFAULT_OFF_TOOLSETS = {"homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search", "a2a", "watchlist"}
 
 
 # Config-only capabilities: they appear in `hermes tools` for provider/API-key
@@ -215,6 +217,29 @@ def _homeassistant_credentials_present() -> bool:
 _TOOLSET_PLATFORM_RESTRICTIONS: Dict[str, Set[str]] = {
     "discord": {"discord"},
     "discord_admin": {"discord"},
+    # The watchlist mutates profile-owned diligence/reminder state. Keep it
+    # available only on interactive, authenticated user surfaces; webhook and
+    # cron inputs can be unattended or derived from untrusted external data.
+    "watchlist": {
+        "api_server",
+        "bluebubbles",
+        "cli",
+        "dingtalk",
+        "discord",
+        "feishu",
+        "matrix",
+        "mattermost",
+        "qqbot",
+        "signal",
+        "slack",
+        "telegram",
+        "wecom",
+        "wecom_callback",
+        "weixin",
+        "whatsapp",
+        "whatsapp_cloud",
+        "yuanbao",
+    },
 }
 
 

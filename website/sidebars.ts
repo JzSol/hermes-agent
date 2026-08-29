@@ -210,6 +210,15 @@ const sidebars: SidebarsConfig = {
                 },
                 {
                   type: 'category',
+                  label: 'finance',
+                  key: 'skills-bundled-finance',
+                  collapsed: true,
+                  items: [
+                    'user-guide/skills/bundled/finance/finance-ido-watch',
+                  ],
+                },
+                {
+                  type: 'category',
                   label: 'github',
                   key: 'skills-bundled-github',
                   collapsed: true,

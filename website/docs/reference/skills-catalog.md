@@ -59,6 +59,12 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | [`email-inbox-triage`](/docs/user-guide/skills/bundled/email/email-email-inbox-triage) | Triage an inbox: prioritize threads, draft replies safely. | `email/email-inbox-triage` |
 | [`himalaya`](/docs/user-guide/skills/bundled/email/email-himalaya) | Himalaya CLI: IMAP/SMTP email from terminal. | `email/himalaya` |
 
+## finance
+
+| Skill | Description | Path |
+|-------|-------------|------|
+| [`ido-watch`](/docs/user-guide/skills/bundled/finance/finance-ido-watch) | Diligence workflow for factual IDO watchlist reviews. | `finance/ido-watch` |
+
 ## github
 
 | Skill | Description | Path |

@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 import { findSlashCommand, SLASH_COMMANDS } from '../app/slash/registry.js'
+import { resolvePython } from '../gatewayClient.js'
 
 type CommandRoute = 'fallback' | 'local' | 'native'
 
@@ -44,16 +45,17 @@ const MUTATING_COMMANDS = [
 
 const loadCommandRegistryNames = (): CommandRegistryLoad => {
   const here = dirname(fileURLToPath(import.meta.url))
+  const root = resolve(here, '../../..')
 
   try {
     const names = JSON.parse(
       execFileSync(
-        process.env.PYTHON ?? 'python3',
+        resolvePython(root),
         [
           '-c',
           'import json; from hermes_cli.commands import COMMAND_REGISTRY; print(json.dumps([c.name for c in COMMAND_REGISTRY]))'
         ],
-        { cwd: resolve(here, '../../..'), encoding: 'utf8' }
+        { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }
       )
     ) as string[]
 

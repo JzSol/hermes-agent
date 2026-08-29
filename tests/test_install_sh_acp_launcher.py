@@ -10,7 +10,9 @@ These tests drive the real block out of `scripts/install.sh` rather than
 asserting on a copy of it, so the shim cannot drift away from the test.
 """
 
+import os
 import re
+import shlex
 import stat
 import subprocess
 from pathlib import Path
@@ -18,11 +20,23 @@ from unittest.mock import patch
 
 INSTALL_SH = Path(__file__).resolve().parent.parent / "scripts" / "install.sh"
 
+LAUNCHER_GUARD = re.compile(
+    r"(launcher_is_hermes_managed\(\) \{.*?^\}\n\n"
+    r"launcher_target_is_replaceable\(\) \{.*?^\}\n\n"
+    r"prepare_managed_launcher\(\) \{.*?^\}\n)",
+    re.S | re.M,
+)
 ACP_BLOCK = re.compile(
-    r'(    rm -f "\$command_link_dir/hermes-acp".*?'
+    r'(    prepare_managed_launcher "\$command_link_dir/hermes-acp".*?'
     r'log_success "Installed hermes-acp launcher[^\n]*\n)',
     re.S,
 )
+
+
+def _extract_launcher_guard() -> str:
+    match = LAUNCHER_GUARD.search(INSTALL_SH.read_text(encoding="utf-8"))
+    assert match, "could not locate managed-launcher ownership guard"
+    return match.group(1)
 
 
 def _extract_acp_shim_block() -> str:
@@ -47,11 +61,14 @@ def _run_block(tmp_path: Path, use_venv: str) -> Path:
     script = (
         "set -e\n"
         f"HERMES_BIN={hermes_bin}\n"
+        f"INSTALL_DIR={tmp_path}\n"
         f"HERMES_ENTRYPOINT={entrypoint}\n"
         f"command_link_dir={command_link_dir}\n"
         f"command_link_display_dir={command_link_dir}\n"
         f"USE_VENV={use_venv}\n"
-        "log_success(){ :; }\n" + _extract_acp_shim_block()
+        "log_success(){ :; }\n"
+        "log_error(){ :; }\n"
+        "log_info(){ :; }\n" + _extract_launcher_guard() + _extract_acp_shim_block()
     )
     result = subprocess.run(
         ["bash", "-c", script],
@@ -75,13 +92,13 @@ def test_venv_install_writes_executable_acp_launcher(tmp_path):
     assert "unset PYTHONHOME" in text
     # The launcher must dispatch to the ACP subcommand, otherwise the host gets
     # an interactive CLI on stdio and the handshake never completes.
-    assert re.search(r'exec .*\bacp\b', text), text
+    assert re.search(r"exec .*\bacp\b", text), text
 
 
 def test_non_venv_install_writes_acp_launcher(tmp_path):
     shim = _run_block(tmp_path, "false")
     text = shim.read_text(encoding="utf-8")
-    assert re.search(r'exec .*\bacp\b', text), text
+    assert re.search(r"exec .*\bacp\b", text), text
 
 
 def test_acp_launcher_does_not_follow_a_symlink_into_the_venv(tmp_path):
@@ -110,11 +127,14 @@ def test_acp_launcher_does_not_follow_a_symlink_into_the_venv(tmp_path):
     script = (
         "set -e\n"
         f"HERMES_BIN={hermes_bin}\n"
+        f"INSTALL_DIR={tmp_path}\n"
         f"HERMES_ENTRYPOINT={entrypoint}\n"
         f"command_link_dir={command_link_dir}\n"
         f"command_link_display_dir={command_link_dir}\n"
         "USE_VENV=true\n"
-        "log_success(){ :; }\n" + _extract_acp_shim_block()
+        "log_success(){ :; }\n"
+        "log_error(){ :; }\n"
+        "log_info(){ :; }\n" + _extract_launcher_guard() + _extract_acp_shim_block()
     )
     result = subprocess.run(
         ["bash", "-c", script], capture_output=True, text=True, cwd=tmp_path
@@ -129,12 +149,56 @@ def test_acp_launcher_does_not_follow_a_symlink_into_the_venv(tmp_path):
     )
 
 
+def _run_prepare_guard(tmp_path: Path, target: Path) -> subprocess.CompletedProcess:
+    hermes_bin = tmp_path / "install" / "venv" / "bin" / "python"
+    hermes_bin.parent.mkdir(parents=True, exist_ok=True)
+    hermes_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+    script = (
+        "set -e\n"
+        f"HERMES_BIN={shlex.quote(str(hermes_bin))}\n"
+        f"INSTALL_DIR={shlex.quote(str(tmp_path / 'install'))}\n"
+        "log_error(){ :; }\n"
+        "log_info(){ :; }\n"
+        + _extract_launcher_guard()
+        + f"prepare_managed_launcher {shlex.quote(str(target))}\n"
+    )
+    return subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True, cwd=tmp_path
+    )
+
+
+def test_installer_refuses_to_overwrite_user_managed_command(tmp_path):
+    target = tmp_path / "bin" / "hermes-ido-scan"
+    target.parent.mkdir()
+    original = "#!/bin/sh\necho user-owned\n"
+    target.write_text(original, encoding="utf-8")
+
+    result = _run_prepare_guard(tmp_path, target)
+
+    assert result.returncode != 0
+    assert target.read_text(encoding="utf-8") == original
+
+
+def test_installer_replaces_only_marker_owned_command(tmp_path):
+    target = tmp_path / "bin" / "hermes-ido-scan"
+    target.parent.mkdir()
+    target.write_text(
+        "#!/bin/sh\n# Hermes Agent - managed public launcher.\n",
+        encoding="utf-8",
+    )
+
+    result = _run_prepare_guard(tmp_path, target)
+
+    assert result.returncode == 0
+    assert not target.exists()
+
+
 # ---------------------------------------------------------------------------
 # hermes-agent launcher regression (#74819)
 # ---------------------------------------------------------------------------
 
 HERMES_AGENT_BLOCK = re.compile(
-    r'(rm -f "\$command_link_dir/hermes-agent".*?'
+    r'(prepare_managed_launcher "\$command_link_dir/hermes-agent".*?'
     r'log_success "Installed hermes-agent launcher[^\n]*\n)',
     re.S,
 )
@@ -171,7 +235,11 @@ def _run_hermes_agent_block(tmp_path: Path, use_venv: str) -> Path | None:
         f"command_link_dir={command_link_dir}\n"
         f"command_link_display_dir={command_link_dir}\n"
         f"USE_VENV={use_venv}\n"
-        "log_success(){ :; }\n" + _extract_hermes_agent_shim_block()
+        "log_success(){ :; }\n"
+        "log_error(){ :; }\n"
+        "log_info(){ :; }\n"
+        + _extract_launcher_guard()
+        + _extract_hermes_agent_shim_block()
     )
     result = subprocess.run(
         ["bash", "-c", script],
@@ -208,7 +276,96 @@ def test_hermes_agent_launcher_cleanup_on_uninstall(tmp_path):
     local_shim.parent.mkdir(parents=True)
     local_shim.write_text("#!/usr/bin/env bash\nexec hermes-agent\n", encoding="utf-8")
 
-    with patch.object(Path, "home", return_value=tmp_path):
+    with (
+        patch.object(Path, "home", return_value=tmp_path),
+        patch(
+            "hermes_cli.uninstall._posix_wrapper_candidate_dirs",
+            return_value=[local_shim.parent],
+        ),
+    ):
         removed = remove_wrapper_script()
 
     assert local_shim in removed, "local hermes-agent wrapper must be removed"
+
+
+def test_termux_uninstall_removes_all_managed_ido_launchers(tmp_path):
+    """Termux publishes into $PREFIX/bin, so uninstall must sweep it too."""
+    from hermes_cli.uninstall import remove_wrapper_script
+
+    prefix = tmp_path / "data" / "data" / "com.termux" / "files" / "usr"
+    bin_dir = prefix / "bin"
+    bin_dir.mkdir(parents=True)
+    names = ("hermes-ido-scan", "hermes-ido-remind", "hermes-ido-setup")
+    for name in names:
+        (bin_dir / name).write_text(
+            "#!/bin/sh\n# Hermes Agent - managed public launcher.\n"
+            'exec "/opt/custom/runtime/entry" "$@"\n',
+            encoding="utf-8",
+        )
+
+    env = {"PREFIX": str(prefix), "TERMUX_VERSION": "0.119"}
+    with (
+        patch.object(Path, "home", return_value=tmp_path / "home"),
+        patch.dict(os.environ, env, clear=False),
+        patch(
+            "hermes_cli.uninstall._posix_wrapper_candidate_dirs",
+            return_value=[bin_dir],
+        ),
+    ):
+        removed = remove_wrapper_script()
+
+    assert {path.name for path in removed} == set(names)
+    assert not any((bin_dir / name).exists() for name in names)
+
+
+def test_uninstall_preserves_unmarked_custom_termux_command(tmp_path):
+    """A command with the same name is not ours unless it bears a marker."""
+    from hermes_cli.uninstall import remove_wrapper_script
+
+    prefix = tmp_path / "data" / "data" / "com.termux" / "files" / "usr"
+    target = prefix / "bin" / "hermes-ido-scan"
+    target.parent.mkdir(parents=True)
+    target.write_text("#!/bin/sh\necho user-managed\n", encoding="utf-8")
+
+    with (
+        patch.object(Path, "home", return_value=tmp_path / "home"),
+        patch.dict(
+            os.environ,
+            {"PREFIX": str(prefix), "TERMUX_VERSION": "0.119"},
+            clear=False,
+        ),
+        patch(
+            "hermes_cli.uninstall._posix_wrapper_candidate_dirs",
+            return_value=[target.parent],
+        ),
+    ):
+        removed = remove_wrapper_script()
+
+    assert target not in removed
+    assert target.exists()
+
+
+def test_termux_prefix_is_a_wrapper_candidate(tmp_path):
+    from hermes_cli import uninstall
+
+    prefix = tmp_path / "custom-termux-prefix"
+    with (
+        patch.object(Path, "home", return_value=tmp_path / "home"),
+        patch.dict(
+            os.environ,
+            {"PREFIX": str(prefix), "TERMUX_VERSION": "0.119"},
+            clear=False,
+        ),
+    ):
+        candidates = uninstall._posix_wrapper_candidate_dirs()
+
+    assert prefix / "bin" in candidates
+
+
+def test_posix_installer_stamps_managed_ido_launchers():
+    installer = INSTALL_SH.read_text(encoding="utf-8")
+    ido_block = installer[installer.index("# The IDO watchlist entry points") :]
+
+    assert "# Hermes Agent - managed public launcher." in ido_block
+    for name in ("hermes-ido-scan", "hermes-ido-remind", "hermes-ido-setup"):
+        assert name in ido_block

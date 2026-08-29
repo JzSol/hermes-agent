@@ -1403,11 +1403,12 @@ class TestQuickSnapshot:
 
 
 class TestQuickSnapshotProjectsKanban:
-    """Regression for #52889: projects.db / kanban.db must survive an upgrade.
+    """User-owned projects/watchlist/kanban databases must survive an upgrade.
 
     Both are per-profile user-created stores outside the git checkout. If they
     are not in the pre-update snapshot, the post-update ``CREATE TABLE IF NOT
-    EXISTS`` runs against a missing file and every project / board row is lost.
+    EXISTS`` runs against a missing file and every project/watchlist/board row
+    is lost.
     """
 
     @pytest.fixture
@@ -1419,6 +1420,7 @@ class TestQuickSnapshotProjectsKanban:
 
         for name, table, row in (
             ("projects.db", "projects", ("p1", "demo")),
+            ("watchlist.db", "projects", ("w1", "ido")),
             ("kanban.db", "tasks", ("t1", "todo")),
         ):
             conn = sqlite3.connect(str(home / name))
@@ -1427,6 +1429,21 @@ class TestQuickSnapshotProjectsKanban:
             conn.commit()
             conn.close()
         return home
+
+    def test_watchlist_db_is_snapshotted_and_restored(self, hermes_home):
+        from hermes_cli.backup import create_quick_snapshot, restore_quick_snapshot
+
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        copy = hermes_home / "state-snapshots" / snap_id / "watchlist.db"
+        assert copy.exists()
+
+        with sqlite3.connect(hermes_home / "watchlist.db") as conn:
+            conn.execute("DELETE FROM projects")
+            conn.commit()
+
+        assert restore_quick_snapshot(snap_id, hermes_home=hermes_home) is True
+        with sqlite3.connect(hermes_home / "watchlist.db") as conn:
+            assert conn.execute("SELECT * FROM projects").fetchall() == [("w1", "ido")]
 
 
 
@@ -1850,7 +1867,5 @@ class TestMemoryProviderExternalPaths:
         assert (restored.stat().st_mode & 0o777) == 0o600
         # External state did NOT leak into HERMES_HOME.
         assert not (hermes_home / "_external").exists()
-
-
 
 

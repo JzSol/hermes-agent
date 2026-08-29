@@ -63,6 +63,7 @@ def test_managed_clone_heals_canonical_home_bin(managed_install):
         assert (home / "bin" / f"{name}.exe").read_bytes() == (
             root / "venv" / "Scripts" / f"{name}.exe"
         ).read_bytes()
+        assert (home / "bin" / f"{name}.exe.hermes-managed").is_file()
 
 
 def test_relocatable_venv_gets_cmd_delegators_not_exe_copies(tmp_path, monkeypatch):
@@ -78,7 +79,35 @@ def test_relocatable_venv_gets_cmd_delegators_not_exe_copies(tmp_path, monkeypat
         # Delegates to the in-venv exe by absolute path, forwarding args.
         assert str(root / "venv" / "Scripts" / f"{name}.exe") in body
         assert "%*" in body
+        assert "managed public launcher" in body
+        assert (home / "bin" / f"{name}.cmd.hermes-managed").is_file()
         assert not (home / "bin" / f"{name}.exe").exists()
+
+
+def test_unowned_launcher_record_blocks_heal_without_overwrite(managed_install):
+    home, root = managed_install
+    bin_dir = home / "bin"
+    bin_dir.mkdir()
+    record = bin_dir / "hermes.exe.hermes-managed"
+    record.write_text("user-owned sidecar\n", encoding="ascii")
+
+    restored = ensure_windows_bin_launchers(root, windows=True, user_path_entries=[])
+
+    assert str(bin_dir / "hermes.exe") not in restored
+    assert not (bin_dir / "hermes.exe").exists()
+    assert record.read_text(encoding="ascii") == "user-owned sidecar\n"
+
+
+def test_linked_managed_bin_blocks_heal_without_writing_outside(
+    managed_install, tmp_path
+):
+    home, root = managed_install
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (home / "bin").symlink_to(outside, target_is_directory=True)
+
+    assert ensure_windows_bin_launchers(root, windows=True, user_path_entries=[]) == []
+    assert list(outside.iterdir()) == []
 
 
 def test_existing_exe_counts_as_present_for_relocatable_venv(tmp_path, monkeypatch):
@@ -115,7 +144,7 @@ def test_legacy_bin_restaged_only_while_on_user_path(managed_install):
     stems = {Path(p).stem for p in restored}
     assert set(_WINDOWS_BIN_LAUNCHERS) <= stems
     for name in _WINDOWS_BIN_LAUNCHERS:
-        assert (legacy / f"{name}.exe").is_file()        # legacy consent honored
+        assert (legacy / f"{name}.exe").is_file()  # legacy consent honored
         assert (home / "bin" / f"{name}.exe").is_file()  # canonical healed too
 
 
@@ -214,9 +243,11 @@ def test_migration_moves_path_to_home_bin_and_strips_legacy(managed_install):
     home, root = managed_install
     legacy_bin = str(root / "bin")
     legacy_scripts = str(root / "venv" / "Scripts")
-    state, read, write = _fake_registry(
-        [legacy_bin, legacy_scripts, r"C:\Windows\system32"]
-    )
+    state, read, write = _fake_registry([
+        legacy_bin,
+        legacy_scripts,
+        r"C:\Windows\system32",
+    ])
     (root / "bin").mkdir()
     (root / "bin" / "hermes.exe").write_bytes(b"legacy copy")
 
@@ -311,10 +342,9 @@ def test_migration_noop_on_posix(managed_install):
 
 
 def test_normalize_windows_path_equivalences():
-    assert (
-        _normalize_windows_path(r"C:\Users\Me\AppData\Local\hermes\bin")
-        == _normalize_windows_path("c:/users/me/appdata/local/HERMES/BIN/")
-    )
+    assert _normalize_windows_path(
+        r"C:\Users\Me\AppData\Local\hermes\bin"
+    ) == _normalize_windows_path("c:/users/me/appdata/local/HERMES/BIN/")
 
 
 def test_repo_gitignores_the_legacy_bin_dir():

@@ -40,6 +40,7 @@ def _fresh_import():
     """
     sys.modules.pop("hermes_bootstrap", None)
     import hermes_bootstrap  # noqa: WPS433
+
     return hermes_bootstrap
 
 
@@ -119,7 +120,6 @@ class TestUserOptOut:
         )
 
 
-
 class TestPosixNoOp:
     """POSIX: zero behavior change.  We don't touch LANG, LC_*, or any
     stdio.  The goal is that Linux/macOS behave identically before and
@@ -144,7 +144,6 @@ class TestPosixNoOp:
         assert hb._bootstrap_applied is False
 
 
-
 class TestIdempotence:
     """Calling apply_windows_utf8_bootstrap() multiple times must be safe."""
 
@@ -152,10 +151,7 @@ class TestIdempotence:
         hb = _fresh_import()
         # First call already happened at import time.
         result = hb.apply_windows_utf8_bootstrap()
-        assert result is False, (
-            "Second call should return False (idempotent no-op)"
-        )
-
+        assert result is False, "Second call should return False (idempotent no-op)"
 
 
 class TestStdioReconfigureErrorHandling:
@@ -185,7 +181,6 @@ class TestStdioReconfigureErrorHandling:
             pytest.fail(f"bootstrap raised on non-reconfigurable stdout: {exc}")
 
 
-
 class TestEntryPointsImportBootstrap:
     """Every Hermes entry point must import hermes_bootstrap as its
     first non-docstring import.  We check this by scanning source files
@@ -195,12 +190,13 @@ class TestEntryPointsImportBootstrap:
     # Entry points that invoke Hermes as a process.  Each one must
     # import hermes_bootstrap before doing any file I/O or stdout writes.
     ENTRY_POINTS = [
-        "hermes_cli/main.py",   # hermes CLI (console_script)
-        "run_agent.py",          # hermes-agent (console_script)
+        "hermes_cli/main.py",  # hermes CLI (console_script)
+        "run_agent.py",  # hermes-agent (console_script)
         "acp_adapter/entry.py",  # hermes-acp (console_script)
-        "gateway/run.py",        # gateway
-        "batch_runner.py",       # batch mode
-        "cli.py",                # legacy direct-launch CLI
+        "gateway/run.py",  # gateway
+        "batch_runner.py",  # batch mode
+        "cli.py",  # legacy direct-launch CLI
+        "watchlist/setup.py",  # hermes-ido-* console scripts
     ]
 
     @pytest.mark.parametrize("path", ENTRY_POINTS)
@@ -224,6 +220,7 @@ class TestEntryPointsImportBootstrap:
         # Resolve relative to the hermes-agent repo root.  Tests live
         # at tests/test_hermes_bootstrap.py, so go up one dir.
         import pathlib
+
         here = pathlib.Path(__file__).resolve()
         repo_root = here.parent.parent  # tests/ -> repo root
         full_path = repo_root / path
@@ -234,6 +231,7 @@ class TestEntryPointsImportBootstrap:
         # Find the first non-comment, non-blank line that starts with
         # 'import ' or 'from ', or a Try block whose body is the import.
         import ast
+
         tree = ast.parse(source)
 
         first_import_node = None
@@ -245,8 +243,10 @@ class TestEntryPointsImportBootstrap:
             # Import node — this is the recovery-friendly form that lets
             # hermes start even when hermes_bootstrap hasn't been
             # re-registered in the venv yet.
-            if isinstance(node, ast.Try) and len(node.body) == 1 and isinstance(
-                node.body[0], (ast.Import, ast.ImportFrom)
+            if (
+                isinstance(node, ast.Try)
+                and len(node.body) == 1
+                and isinstance(node.body[0], (ast.Import, ast.ImportFrom))
             ):
                 first_import_node = node.body[0]
                 break
@@ -314,7 +314,6 @@ class TestHardenImportPath:
         # but only AFTER the Hermes root.
         assert result.index("/opt/hermes") < result.index("/home/user/tg-ws-proxy")
 
-
     def test_env_var_used_when_no_arg(self):
         hb = _fresh_import()
         original = sys.path[:]
@@ -332,12 +331,12 @@ class TestHardenImportPath:
                 os.environ["HERMES_PYTHON_SRC_ROOT"] = original_env
 
 
-
 class TestSuppressPlatformVerConsole:
     """suppress_platform_ver_console: stub applied on Windows, no-op on POSIX."""
 
     def test_noop_on_posix(self):
         import platform
+
         hb = _fresh_import()
         original = getattr(platform, "_syscmd_ver", None)
         hb.suppress_platform_ver_console()
@@ -349,6 +348,7 @@ class TestSuppressPlatformVerConsole:
         # installed; the reason it exists — ``platform.win32_ver()`` shelling
         # out ``cmd /c ver`` — has no counterpart off Windows.
         import platform
+
         hb = _fresh_import()
         original = getattr(platform, "_syscmd_ver", None)
         try:
@@ -364,4 +364,3 @@ class TestSuppressPlatformVerConsole:
         finally:
             if original is not None:
                 platform._syscmd_ver = original
-

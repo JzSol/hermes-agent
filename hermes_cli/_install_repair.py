@@ -22,6 +22,7 @@ recovery will bootstrap uv on the next launch if it ever matters).
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import shutil
@@ -95,7 +96,10 @@ def _resolve_install_target(root: Path) -> tuple[list[str], dict | None]:
     if uv_bin:
         from hermes_constants import project_venv_dir
 
-        env = {**os.environ, "VIRTUAL_ENV": str(project_venv_dir(root) or root / "venv")}
+        env = {
+            **os.environ,
+            "VIRTUAL_ENV": str(project_venv_dir(root) or root / "venv"),
+        }
         if _is_termux_env(env):
             env.pop("PYTHONPATH", None)
             env.pop("PYTHONHOME", None)
@@ -122,7 +126,90 @@ def _venv_scripts_dir(root: Path) -> Path | None:
 #: managed binary dir (the default Hermes root's ``bin``, next to uv.exe)
 #: on the user PATH. Keep in lockstep with the launcher list in
 #: scripts/install.ps1.
-_WINDOWS_BIN_LAUNCHERS = ("hermes", "hermes-acp")
+_WINDOWS_BIN_LAUNCHERS = (
+    "hermes",
+    "hermes-acp",
+    "hermes-ido-scan",
+    "hermes-ido-remind",
+    "hermes-ido-setup",
+)
+_WINDOWS_LAUNCHER_MARKER = "Hermes Agent - managed public launcher."
+
+
+def _launcher_digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(64 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest().upper()
+
+
+def _launcher_record_path(path: Path) -> Path:
+    return path.with_name(f"{path.name}.hermes-managed")
+
+
+def _path_is_link_or_reparse_point(path: Path) -> bool:
+    """Return whether *path* redirects filesystem access elsewhere.
+
+    ``Path.is_symlink`` covers POSIX links and Windows symlinks. Windows
+    junctions are reparse points rather than symlinks on supported Python
+    versions, so inspect ``st_file_attributes`` as well. Missing paths are
+    safe for an exclusive create.
+    """
+
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return path.is_symlink() or bool(getattr(info, "st_file_attributes", 0) & 0x400)
+
+
+def _launcher_record_matches(path: Path) -> bool:
+    """Require a regular launcher and its exact hash-bound ownership record."""
+
+    record = _launcher_record_path(path)
+    if (
+        _path_is_link_or_reparse_point(path)
+        or _path_is_link_or_reparse_point(record)
+        or not path.is_file()
+        or not record.is_file()
+    ):
+        return False
+    try:
+        expected = f"{_WINDOWS_LAUNCHER_MARKER}|{_launcher_digest(path)}"
+        return record.read_text(encoding="ascii").strip() == expected
+    except (OSError, UnicodeError):
+        return False
+
+
+def _launcher_record_replaceable(path: Path) -> bool:
+    record = _launcher_record_path(path)
+    if not record.exists() and not record.is_symlink():
+        return True
+    if record.is_symlink() or not record.is_file():
+        return False
+    try:
+        return record.read_text(encoding="ascii").startswith(
+            f"{_WINDOWS_LAUNCHER_MARKER}|"
+        )
+    except (OSError, UnicodeError):
+        return False
+
+
+def _write_launcher_record(path: Path) -> None:
+    record = _launcher_record_path(path)
+    staging = record.with_name(f"{record.name}.heal.{os.getpid()}")
+    try:
+        staging.write_text(
+            f"{_WINDOWS_LAUNCHER_MARKER}|{_launcher_digest(path)}\n",
+            encoding="ascii",
+        )
+        os.replace(staging, record)
+    finally:
+        with contextlib.suppress(OSError):
+            staging.unlink()
 
 
 def _venv_is_relocatable(venv_dir: Path) -> bool:
@@ -258,7 +345,9 @@ def ensure_windows_bin_launchers(
     # override), so the healthy path must stay at a couple of stat calls.
     if _normalize_windows_path(root.parent) == _normalize_windows_path(home):
         canonical = home / "bin"
-        if any(not _launcher_present(canonical, name) for name in _WINDOWS_BIN_LAUNCHERS):
+        if any(
+            not _launcher_present(canonical, name) for name in _WINDOWS_BIN_LAUNCHERS
+        ):
             targets.append(canonical)
 
     # Legacy transition target — the pre-migration in-checkout dir. Only
@@ -295,27 +384,46 @@ def ensure_windows_bin_launchers(
 
     restored: list[str] = []
     for target in targets:
+        if _path_is_link_or_reparse_point(target):
+            continue
         try:
-            target.mkdir(parents=True, exist_ok=True)
+            target.mkdir(parents=True, exist_ok=False)
+        except FileExistsError:
+            if _path_is_link_or_reparse_point(target) or not target.is_dir():
+                continue
         except OSError:
             continue
         for name, source in sources:
             if _launcher_present(target, name):
                 continue
             final = target / (f"{name}.cmd" if relocatable else f"{name}.exe")
+            if not _launcher_record_replaceable(final):
+                continue
             staging = target / f"{final.name}.heal.{os.getpid()}"
+            published = False
             try:
                 if relocatable:
                     staging.write_text(
-                        "@echo off\r\n" f'"{source}" %*\r\n', encoding="ascii"
+                        f"@echo off\r\nREM {_WINDOWS_LAUNCHER_MARKER}\r\n"
+                        f'"{source}" %*\r\n',
+                        encoding="ascii",
                     )
                 else:
                     shutil.copy2(source, staging)
-                os.replace(staging, final)
+                # Publish without replacing a file/symlink that appeared after
+                # the presence check. NTFS supports hard links, and staging in
+                # the destination directory keeps this on one volume.
+                os.link(staging, final)
+                published = True
+                staging.unlink()
+                _write_launcher_record(final)
                 restored.append(str(final))
             except OSError:
                 with contextlib.suppress(OSError):
                     staging.unlink()
+                if published:
+                    with contextlib.suppress(OSError):
+                        final.unlink()
     if restored:
         # Guarded like everything else in this never-raises helper: a
         # closed/broken stderr must not turn a successful heal into a crash.
@@ -408,7 +516,9 @@ def migrate_windows_bin_path(
 
     home_bin = home / "bin"
     if any(
-        not ((home_bin / f"{name}.exe").is_file() or (home_bin / f"{name}.cmd").is_file())
+        not (
+            (home_bin / f"{name}.exe").is_file() or (home_bin / f"{name}.cmd").is_file()
+        )
         for name in _WINDOWS_BIN_LAUNCHERS
     ):
         return False  # staging incomplete — leave the PATH alone

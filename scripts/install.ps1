@@ -3111,7 +3111,85 @@ function Install-HermesCommandLaunchers {
         throw "Cannot set up the hermes command: required launcher not found: $requiredSource"
     }
 
-    New-Item -ItemType Directory -Force -Path $Destination | Out-Null
+    $destinationItem = Get-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
+    if ($null -ne $destinationItem) {
+        if (($destinationItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Refusing to install launchers through a linked or junction directory: $Destination"
+        }
+        if (-not $destinationItem.PSIsContainer) {
+            throw "Cannot set up the hermes command: launcher destination is not a directory: $Destination"
+        }
+    } else {
+        New-Item -ItemType Directory -Path $Destination | Out-Null
+    }
+
+    $managedMarker = "Hermes Agent - managed public launcher."
+    function Test-HermesOwnedRecordPath {
+        param([string]$Path)
+        $recordPath = "$Path.hermes-managed"
+        if (-not (Test-Path -LiteralPath $recordPath)) { return $true }
+        try {
+            $item = Get-Item -LiteralPath $recordPath -Force
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                return $false
+            }
+            return [IO.File]::ReadAllText($recordPath).StartsWith("$managedMarker|")
+        } catch {
+            return $false
+        }
+    }
+    function Test-HermesManagedRecord {
+        param([string]$Path)
+        $recordPath = "$Path.hermes-managed"
+        if (-not (Test-Path -LiteralPath $recordPath -PathType Leaf)) { return $false }
+        try {
+            $actualHash = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+            $record = [IO.File]::ReadAllText($recordPath).Trim()
+            return $record -eq "$managedMarker|$actualHash"
+        } catch {
+            return $false
+        }
+    }
+    function Test-HermesOwnedLauncher {
+        param([string]$Path, [string]$Source)
+        if (-not (Test-Path -LiteralPath $Path)) { return $true }
+        try {
+            $item = Get-Item -LiteralPath $Path -Force
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                return $false
+            }
+        } catch {
+            return $false
+        }
+        $recordPath = "$Path.hermes-managed"
+        if (Test-Path -LiteralPath $recordPath) {
+            # Once a hash-bound record exists it is authoritative. An edited
+            # launcher must not fall through to the legacy marker/path test.
+            return Test-HermesManagedRecord -Path $Path
+        }
+        if ([IO.Path]::GetExtension($Path) -ieq ".cmd") {
+            try {
+                $content = [IO.File]::ReadAllText($Path)
+                if ($content.Contains($managedMarker) -or
+                    $content.Contains($Root) -or $content.Contains($Source)) {
+                    return $true
+                }
+            } catch {}
+        }
+        if ([IO.Path]::GetExtension($Path) -ieq ".exe" -and
+            (Test-Path -LiteralPath $Source -PathType Leaf)) {
+            try {
+                return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash -eq
+                       (Get-FileHash -LiteralPath $Source -Algorithm SHA256).Hash
+            } catch {}
+        }
+        return $false
+    }
+    function Write-HermesManagedRecord {
+        param([string]$Path)
+        $hash = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+        Set-Content -LiteralPath "$Path.hermes-managed" -Value "$managedMarker|$hash" -Encoding Ascii
+    }
 
     # Launcher form depends on the venv (keep in lockstep with
     # hermes_cli/_install_repair.py): a normal venv's exe trampoline
@@ -3125,15 +3203,45 @@ function Install-HermesCommandLaunchers {
     if (Test-Path -LiteralPath $pyvenvCfg) {
         $venvRelocatable = [bool](Select-String -Path $pyvenvCfg -Pattern '^\s*relocatable\s*=\s*true\s*$' -Quiet)
     }
-    foreach ($launcher in @("hermes", "hermes-acp")) {
+    $launcherPlans = @()
+    foreach ($launcher in @(
+        "hermes",
+        "hermes-acp",
+        "hermes-ido-scan",
+        "hermes-ido-remind",
+        "hermes-ido-setup"
+    )) {
         $src = Join-Path $scriptsDir "$launcher.exe"
         if (-not (Test-Path -LiteralPath $src -PathType Leaf)) { continue }
+        $exeTarget = Join-Path $Destination "$launcher.exe"
+        $cmdTarget = Join-Path $Destination "$launcher.cmd"
+        foreach ($candidate in @($exeTarget, $cmdTarget)) {
+            if (-not (Test-HermesOwnedRecordPath -Path $candidate)) {
+                throw "Refusing to overwrite an existing user-managed launcher record: $candidate.hermes-managed. Move or rename it, then run the Hermes installer again."
+            }
+            if (-not (Test-HermesOwnedLauncher -Path $candidate -Source $src)) {
+                throw "Refusing to overwrite an existing user-managed command: $candidate. Move or rename it, then run the Hermes installer again."
+            }
+        }
+        $launcherPlans += [PSCustomObject]@{
+            Name = $launcher
+            Source = $src
+            ExeTarget = $exeTarget
+            CmdTarget = $cmdTarget
+        }
+    }
+
+    foreach ($plan in $launcherPlans) {
+        foreach ($target in @($plan.ExeTarget, $plan.CmdTarget)) {
+            Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath "$target.hermes-managed" -Force -ErrorAction SilentlyContinue
+        }
         if ($venvRelocatable) {
-            Remove-Item (Join-Path $Destination "$launcher.exe") -Force -ErrorAction SilentlyContinue
-            Set-Content -Path (Join-Path $Destination "$launcher.cmd") -Value "@echo off`r`n`"$src`" %*" -Encoding Ascii
+            Set-Content -LiteralPath $plan.CmdTarget -Value "@echo off`r`nREM Hermes Agent - managed public launcher.`r`n`"$($plan.Source)`" %*" -Encoding Ascii
+            Write-HermesManagedRecord -Path $plan.CmdTarget
         } else {
-            Remove-Item (Join-Path $Destination "$launcher.cmd") -Force -ErrorAction SilentlyContinue
-            Copy-Item -Force -LiteralPath $src -Destination (Join-Path $Destination "$launcher.exe")
+            Copy-Item -LiteralPath $plan.Source -Destination $plan.ExeTarget
+            Write-HermesManagedRecord -Path $plan.ExeTarget
         }
     }
 

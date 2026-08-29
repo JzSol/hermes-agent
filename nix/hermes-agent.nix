@@ -211,6 +211,9 @@ stdenv.mkDerivation (finalAttrs: {
         "hermes"
         "hermes-agent"
         "hermes-acp"
+        "hermes-ido-scan"
+        "hermes-ido-remind"
+        "hermes-ido-setup"
       ]
     }
 

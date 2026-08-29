@@ -1864,6 +1864,63 @@ PY
     log_success "All dependencies installed"
 }
 
+launcher_is_hermes_managed() {
+    local launcher="$1"
+    local target=""
+
+    if [ ! -e "$launcher" ] && [ ! -L "$launcher" ]; then
+        return 1
+    fi
+    if [ -f "$launcher" ] && grep -Fq '# Hermes Agent - managed public launcher.' "$launcher" 2>/dev/null; then
+        return 0
+    fi
+    if [ -f "$launcher" ] && [ -n "${INSTALL_DIR:-}" ] && grep -Fq "$INSTALL_DIR" "$launcher" 2>/dev/null; then
+        return 0
+    fi
+    if [ -f "$launcher" ] && [ -n "${HERMES_BIN:-}" ] && grep -Fq "$HERMES_BIN" "$launcher" 2>/dev/null; then
+        return 0
+    fi
+    if [ -L "$launcher" ]; then
+        target="$(readlink "$launcher" 2>/dev/null || true)"
+        if [ -n "${HERMES_BIN:-}" ]; then
+            case "$target" in
+                "$HERMES_BIN"|"$(dirname "$HERMES_BIN")"/*)
+                    return 0
+                    ;;
+            esac
+        fi
+        if [ -n "${INSTALL_DIR:-}" ]; then
+            case "$target" in
+                "$INSTALL_DIR"/*)
+                    return 0
+                    ;;
+            esac
+        fi
+    fi
+    return 1
+}
+
+launcher_target_is_replaceable() {
+    local launcher="$1"
+    if [ ! -e "$launcher" ] && [ ! -L "$launcher" ]; then
+        return 0
+    fi
+    if ! launcher_is_hermes_managed "$launcher"; then
+        log_error "Refusing to overwrite an existing user-managed command: $launcher"
+        log_info "Move or rename that command, then run the Hermes installer again."
+        return 1
+    fi
+}
+
+prepare_managed_launcher() {
+    local launcher="$1"
+    launcher_target_is_replaceable "$launcher" || return 1
+    if [ ! -e "$launcher" ] && [ ! -L "$launcher" ]; then
+        return 0
+    fi
+    rm -f -- "$launcher"
+}
+
 setup_path() {
     log_info "Setting up hermes command..."
 
@@ -1899,10 +1956,25 @@ setup_path() {
     # We intentionally clear PYTHONPATH/PYTHONHOME here so inherited env vars
     # can't make this launcher import modules from another checkout.
     mkdir -p "$command_link_dir"
+    # Refuse every ownership conflict before replacing the first command, so
+    # a later conflict cannot leave this install with only part of its public
+    # launcher set refreshed.
+    local public_command public_source
+    for public_command in hermes hermes-agent hermes-acp; do
+        launcher_target_is_replaceable "$command_link_dir/$public_command" || return 1
+    done
+    if [ "$USE_VENV" = true ]; then
+        for public_command in hermes-ido-scan hermes-ido-remind hermes-ido-setup; do
+            public_source="$INSTALL_DIR/venv/bin/$public_command"
+            if [ -x "$public_source" ]; then
+                launcher_target_is_replaceable "$command_link_dir/$public_command" || return 1
+            fi
+        done
+    fi
     # Older installs created this path as a symlink to $HERMES_BIN. Without
     # the rm, `cat >` follows the symlink and overwrites the venv pip entry
     # point with this shim — making `exec "$HERMES_BIN"` self-recurse. (#21454)
-    rm -f "$command_link_dir/hermes"
+    prepare_managed_launcher "$command_link_dir/hermes" || return 1
     if [ "$USE_VENV" = true ]; then
         # uv-generated console scripts resolve themselves through `realpath`,
         # which stock macOS does not provide. Run the checked-in entrypoint
@@ -1910,6 +1982,7 @@ setup_path() {
         # independent of non-standard shell utilities.
         cat > "$command_link_dir/hermes" <<EOF
 #!/usr/bin/env bash
+# Hermes Agent - managed public launcher.
 unset PYTHONPATH
 unset PYTHONHOME
 exec "$HERMES_BIN" "$HERMES_ENTRYPOINT" "\$@"
@@ -1917,6 +1990,7 @@ EOF
     else
         cat > "$command_link_dir/hermes" <<EOF
 #!/usr/bin/env bash
+# Hermes Agent - managed public launcher.
 unset PYTHONPATH
 unset PYTHONHOME
 exec "$HERMES_BIN" "\$@"
@@ -1929,10 +2003,11 @@ EOF
     # pyproject.toml's [project.scripts] lives inside the venv, which is not on
     # the login-shell PATH. Without this launcher users can't invoke the agent
     # entrypoint directly from outside the venv. (#74819)
-    rm -f "$command_link_dir/hermes-agent"
+    prepare_managed_launcher "$command_link_dir/hermes-agent" || return 1
     if [ "$USE_VENV" = true ]; then
         cat > "$command_link_dir/hermes-agent" <<EOF
 #!/usr/bin/env bash
+# Hermes Agent - managed public launcher.
 unset PYTHONPATH
 unset PYTHONHOME
 exec "$HERMES_BIN" "$INSTALL_DIR/run_agent.py" "\$@"
@@ -1940,6 +2015,7 @@ EOF
     else
         cat > "$command_link_dir/hermes-agent" <<EOF
 #!/usr/bin/env bash
+# Hermes Agent - managed public launcher.
 unset PYTHONPATH
 unset PYTHONHOME
 exec "$HERMES_BIN" run_agent.py "\$@"
@@ -1954,10 +2030,11 @@ EOF
     # this launcher those hosts report Hermes as not installed. (#21454 applies
     # here too: clear the path first so `cat >` cannot follow an old symlink
     # into the venv and overwrite the console script.)
-    rm -f "$command_link_dir/hermes-acp"
+    prepare_managed_launcher "$command_link_dir/hermes-acp" || return 1
     if [ "$USE_VENV" = true ]; then
         cat > "$command_link_dir/hermes-acp" <<EOF
 #!/usr/bin/env bash
+# Hermes Agent - managed public launcher.
 unset PYTHONPATH
 unset PYTHONHOME
 exec "$HERMES_BIN" "$HERMES_ENTRYPOINT" acp "\$@"
@@ -1965,6 +2042,7 @@ EOF
     else
         cat > "$command_link_dir/hermes-acp" <<EOF
 #!/usr/bin/env bash
+# Hermes Agent - managed public launcher.
 unset PYTHONPATH
 unset PYTHONHOME
 exec "$HERMES_BIN" acp "\$@"
@@ -1972,6 +2050,31 @@ EOF
     fi
     chmod +x "$command_link_dir/hermes-acp"
     log_success "Installed hermes-acp launcher → $command_link_display_dir/hermes-acp"
+
+    # The IDO watchlist entry points are generated inside the private venv,
+    # which is deliberately not placed on the user's PATH.  Publish narrow
+    # shims for them next to the main Hermes launcher.  In --no-venv mode pip
+    # already installs these console scripts directly on PATH.
+    if [ "$USE_VENV" = true ]; then
+        local ido_command ido_source
+        for ido_command in hermes-ido-scan hermes-ido-remind hermes-ido-setup; do
+            ido_source="$INSTALL_DIR/venv/bin/$ido_command"
+            if [ ! -x "$ido_source" ]; then
+                log_warn "Skipping missing watchlist launcher: $ido_source"
+                continue
+            fi
+            prepare_managed_launcher "$command_link_dir/$ido_command" || return 1
+            cat > "$command_link_dir/$ido_command" <<EOF
+#!/usr/bin/env bash
+# Hermes Agent - managed public launcher.
+unset PYTHONPATH
+unset PYTHONHOME
+exec "$ido_source" "\$@"
+EOF
+            chmod +x "$command_link_dir/$ido_command"
+            log_success "Installed $ido_command launcher → $command_link_display_dir/$ido_command"
+        done
+    fi
 
     if [ "$DISTRO" = "termux" ]; then
         export PATH="$command_link_dir:$PATH"

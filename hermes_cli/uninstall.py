@@ -109,24 +109,48 @@ def remove_path_from_shell_configs():
     return removed_from
 
 
+_MANAGED_POSIX_LAUNCHER_MARKER = "# Hermes Agent - managed public launcher."
+_POSIX_WRAPPER_NAMES = (
+    "hermes",
+    "hermes-acp",
+    "hermes-agent",
+    "hermes-ido-scan",
+    "hermes-ido-remind",
+    "hermes-ido-setup",
+)
+
+
+def _posix_wrapper_candidate_dirs() -> list[Path]:
+    """Directories where the POSIX/Termux installer publishes commands."""
+    dirs = [Path.home() / ".local" / "bin", Path("/usr/local/bin")]
+    prefix = os.environ.get("PREFIX", "").strip()
+    if prefix and (
+        os.environ.get("TERMUX_VERSION") or "com.termux/files/usr" in prefix
+    ):
+        dirs.append(Path(prefix) / "bin")
+    return list(dict.fromkeys(dirs))
+
+
 def remove_wrapper_script():
-    """Remove the hermes wrapper script if it exists."""
+    """Remove Hermes-owned public POSIX launchers, including Termux shims."""
     wrapper_paths = [
-        Path.home() / ".local" / "bin" / "hermes",
-        Path.home() / ".local" / "bin" / "hermes-acp",
-        Path.home() / ".local" / "bin" / "hermes-agent",
-        Path("/usr/local/bin/hermes"),
-        Path("/usr/local/bin/hermes-acp"),
-        Path("/usr/local/bin/hermes-agent"),
+        directory / name
+        for directory in _posix_wrapper_candidate_dirs()
+        for name in _POSIX_WRAPPER_NAMES
     ]
     
     removed = []
     for wrapper in wrapper_paths:
         if wrapper.exists():
             try:
-                # Check if it's our wrapper (contains hermes_cli reference)
+                # Current installers stamp every wrapper explicitly. Keep the
+                # legacy content checks so older installs remain removable.
                 content = wrapper.read_text(encoding="utf-8")
-                if 'hermes_cli' in content or 'hermes-agent' in content:
+                if (
+                    _MANAGED_POSIX_LAUNCHER_MARKER in content
+                    or "hermes_cli" in content
+                    or "hermes-agent" in content
+                ):
                     wrapper.unlink()
                     removed.append(wrapper)
             except Exception as e:
@@ -143,7 +167,7 @@ def _node_symlink_candidate_dirs() -> "list[Path]":
         dirs.append(Path("/usr/local/bin"))
     # Termux installs put links in $PREFIX/bin.
     prefix = os.environ.get("PREFIX", "")
-    if prefix and "com.termux" in prefix:
+    if prefix and (os.environ.get("TERMUX_VERSION") or "com.termux" in prefix):
         dirs.append(Path(prefix) / "bin")
     return dirs
 
@@ -469,12 +493,21 @@ def remove_windows_bin_launchers(*, windows: bool | None = None) -> list[Path]:
     try:
         # Lockstep launcher-name list — the same names install.ps1 and the
         # startup heal stage into this dir.
-        from hermes_cli._install_repair import _WINDOWS_BIN_LAUNCHERS
+        from hermes_cli._install_repair import (
+            _WINDOWS_BIN_LAUNCHERS,
+            _launcher_record_matches,
+            _launcher_record_path,
+            _path_is_link_or_reparse_point,
+        )
         from hermes_constants import get_default_hermes_root
 
         bin_dir = get_default_hermes_root() / "bin"
     except Exception as e:
         log_warn(f"Could not locate the managed binary dir: {e}")
+        return []
+
+    if _path_is_link_or_reparse_point(bin_dir):
+        log_warn(f"Refusing to remove launchers through a linked binary dir: {bin_dir}")
         return []
 
     removed: list[Path] = []
@@ -483,16 +516,33 @@ def remove_windows_bin_launchers(*, windows: bool | None = None) -> list[Path]:
             launcher = bin_dir / f"{name}{suffix}"
             if not launcher.exists():
                 continue
+            if not _launcher_record_matches(launcher):
+                log_warn(
+                    f"Preserving launcher without a valid Hermes ownership record: "
+                    f"{launcher}"
+                )
+                continue
+            removed_launcher = False
             try:
                 launcher.unlink()
                 removed.append(launcher)
+                removed_launcher = True
             except OSError:
                 aside = launcher.with_name(f"{launcher.name}.uninstalled.{os.getpid()}")
                 try:
                     os.rename(launcher, aside)
                     removed.append(launcher)
+                    removed_launcher = True
                 except OSError as e:
                     log_warn(f"Could not remove {launcher}: {e}")
+            if removed_launcher:
+                record = _launcher_record_path(launcher)
+                try:
+                    if record.is_file() and not _path_is_link_or_reparse_point(record):
+                        record.unlink()
+                        removed.append(record)
+                except (OSError, UnicodeError) as e:
+                    log_warn(f"Could not remove {record}: {e}")
     return removed
 
 

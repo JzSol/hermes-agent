@@ -9,6 +9,7 @@ uninstalls, so the PATH sweep takes the ``bin`` entry only on a full wipe.
 
 Platform verdicts are injected parameters (input→output, not host fakes).
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -16,7 +17,11 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import uninstall
-from hermes_cli._install_repair import _WINDOWS_BIN_LAUNCHERS
+from hermes_cli._install_repair import (
+    _WINDOWS_BIN_LAUNCHERS,
+    _WINDOWS_LAUNCHER_MARKER,
+    _launcher_digest,
+)
 
 
 @pytest.fixture
@@ -26,7 +31,15 @@ def managed_bin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     bin_dir = home / "bin"
     bin_dir.mkdir(parents=True)
     (bin_dir / "hermes.exe").write_bytes(b"MZ launcher")
-    (bin_dir / "hermes-acp.cmd").write_text("@echo off\r\n", encoding="ascii")
+    (bin_dir / "hermes-acp.cmd").write_text(
+        f"@echo off\r\nREM {_WINDOWS_LAUNCHER_MARKER}\r\n", encoding="ascii"
+    )
+    for name in ("hermes.exe", "hermes-acp.cmd"):
+        launcher = bin_dir / name
+        (bin_dir / f"{name}.hermes-managed").write_text(
+            f"{_WINDOWS_LAUNCHER_MARKER}|{_launcher_digest(launcher)}\n",
+            encoding="ascii",
+        )
     (bin_dir / "uv.exe").write_bytes(b"MZ managed uv")
     (bin_dir / "uvx.exe").write_bytes(b"MZ managed uvx")
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -36,9 +49,16 @@ def managed_bin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def test_removes_both_launcher_forms_and_keeps_managed_uv(managed_bin: Path):
     removed = uninstall.remove_windows_bin_launchers(windows=True)
 
-    assert sorted(p.name for p in removed) == ["hermes-acp.cmd", "hermes.exe"]
+    assert sorted(p.name for p in removed) == [
+        "hermes-acp.cmd",
+        "hermes-acp.cmd.hermes-managed",
+        "hermes.exe",
+        "hermes.exe.hermes-managed",
+    ]
     assert not (managed_bin / "hermes.exe").exists()
     assert not (managed_bin / "hermes-acp.cmd").exists()
+    assert not (managed_bin / "hermes.exe.hermes-managed").exists()
+    assert not (managed_bin / "hermes-acp.cmd.hermes-managed").exists()
     # The managed uv stays — keep-data reinstalls still need it.
     assert (managed_bin / "uv.exe").exists()
     assert (managed_bin / "uvx.exe").exists()
@@ -54,7 +74,12 @@ def test_anchors_on_default_root_not_profile_home(
 
     removed = uninstall.remove_windows_bin_launchers(windows=True)
 
-    assert sorted(p.name for p in removed) == ["hermes-acp.cmd", "hermes.exe"]
+    assert sorted(p.name for p in removed) == [
+        "hermes-acp.cmd",
+        "hermes-acp.cmd.hermes-managed",
+        "hermes.exe",
+        "hermes.exe.hermes-managed",
+    ]
     assert not (managed_bin / "hermes.exe").exists()
 
 
@@ -69,6 +94,35 @@ def test_noop_when_no_launchers_staged(tmp_path: Path, monkeypatch: pytest.Monke
     monkeypatch.setenv("HERMES_HOME", str(home))
 
     assert uninstall.remove_windows_bin_launchers(windows=True) == []
+
+
+def test_preserves_unowned_or_edited_launcher(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    bin_dir = home / "bin"
+    bin_dir.mkdir(parents=True)
+    launcher = bin_dir / "hermes.exe"
+    launcher.write_bytes(b"user command")
+    record = bin_dir / "hermes.exe.hermes-managed"
+    record.write_text(f"{_WINDOWS_LAUNCHER_MARKER}|STALE-DIGEST\n", encoding="ascii")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    assert uninstall.remove_windows_bin_launchers(windows=True) == []
+    assert launcher.read_bytes() == b"user command"
+    assert record.read_text(encoding="ascii").endswith("STALE-DIGEST\n")
+
+
+def test_refuses_linked_managed_bin(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    launcher = outside / "hermes.exe"
+    launcher.write_bytes(b"outside command")
+    (home / "bin").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    assert uninstall.remove_windows_bin_launchers(windows=True) == []
+    assert launcher.read_bytes() == b"outside command"
 
 
 def test_launcher_names_stay_in_lockstep_with_install_ps1():
@@ -87,6 +141,19 @@ def test_launcher_names_stay_in_lockstep_with_install_ps1():
     assert staged == set(_WINDOWS_BIN_LAUNCHERS)
     for name in _WINDOWS_BIN_LAUNCHERS:
         assert name.startswith("hermes")  # never a generic name it could clobber
+
+    launcher_block = install_ps1[
+        install_ps1.index(
+            "function Install-HermesCommandLaunchers"
+        ) : install_ps1.index("function Set-PathVariable")
+    ]
+    assert "Refusing to overwrite an existing user-managed command" in launcher_block
+    assert ".hermes-managed" in launcher_block
+    assert "return Test-HermesManagedRecord -Path $Path" in launcher_block
+    assert "linked or junction directory" in launcher_block
+    assert launcher_block.index("Refusing to overwrite") < launcher_block.index(
+        "Remove-Item -LiteralPath $target"
+    )
 
 
 class TestManagedBinPathMarker:

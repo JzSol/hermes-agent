@@ -8,9 +8,11 @@ the existing symlink and overwrote the pip entry point with the shim. The
 shim's ``exec "$HERMES_BIN" "$@"`` then self-recursed and ``hermes`` hung on
 every invocation.
 
-These tests pin the fix: ``setup_path()`` must remove ``$command_link_dir/hermes``
-before writing through the redirect, so the shim is created as a regular file
-in ``command_link_dir`` and the venv entry point is left intact.
+These tests pin the fix: ``setup_path()`` must pass
+``$command_link_dir/hermes`` through the managed-launcher ownership guard before
+writing through the redirect. The guard removes an old Hermes link but refuses
+an unrelated user command, so the shim is created as a regular file without
+touching the venv entry point.
 """
 
 from __future__ import annotations
@@ -20,17 +22,29 @@ import stat
 import subprocess
 from pathlib import Path
 
-
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
 INSTALL_SH = REPO_ROOT / "scripts" / "install.sh"
+
+
+def _extract_launcher_guard() -> str:
+    text = INSTALL_SH.read_text(encoding="utf-8")
+    match = re.search(
+        r"^launcher_is_hermes_managed\(\) \{.*?^\}\n\n"
+        r"launcher_target_is_replaceable\(\) \{.*?^\}\n\n"
+        r"prepare_managed_launcher\(\) \{.*?^\}\n",
+        text,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert match is not None, "managed-launcher ownership guard not found"
+    return match.group(0)
 
 
 def _extract_setup_path_shim_block() -> str:
     """Return the install.sh shim-write block used by setup_path()."""
     text = INSTALL_SH.read_text()
     match = re.search(
-        r"(?P<block>mkdir -p \"\$command_link_dir\".*?chmod \+x \"\$command_link_dir/hermes\")",
+        r"(?P<block>prepare_managed_launcher \"\$command_link_dir/hermes\".*?"
+        r"chmod \+x \"\$command_link_dir/hermes\")",
         text,
         re.DOTALL,
     )
@@ -40,21 +54,19 @@ def _extract_setup_path_shim_block() -> str:
     return match["block"]
 
 
-def test_setup_path_shim_block_removes_old_link_before_writing() -> None:
-    """Static guard: the rm must precede the cat heredoc, not follow it."""
+def test_setup_path_shim_block_prepares_managed_link_before_writing() -> None:
+    """Static guard: ownership check and unlink must precede the heredoc."""
+    guard = _extract_launcher_guard()
     block = _extract_setup_path_shim_block()
-    rm_idx = block.find('rm -f "$command_link_dir/hermes"')
+    prepare_idx = block.find(
+        'prepare_managed_launcher "$command_link_dir/hermes"'
+    )
     cat_idx = block.find('cat > "$command_link_dir/hermes" <<EOF')
-    assert rm_idx != -1, (
-        "setup_path() must `rm -f` $command_link_dir/hermes before the "
-        "`cat >` heredoc, otherwise an existing symlink (left by older "
-        "installs) will be followed and the pip entry point overwritten. "
-        "See #21454."
-    )
+    assert prepare_idx != -1
     assert cat_idx != -1, "expected `cat >` heredoc still present"
-    assert rm_idx < cat_idx, (
-        "`rm -f` must come *before* the `cat >` heredoc, not after."
-    )
+    assert prepare_idx < cat_idx
+    assert 'launcher_target_is_replaceable "$launcher"' in guard
+    assert 'rm -f -- "$launcher"' in guard
 
 
 def test_re_running_setup_path_block_preserves_pip_entry_point(tmp_path: Path) -> None:
@@ -90,7 +102,12 @@ def test_re_running_setup_path_block_preserves_pip_entry_point(tmp_path: Path) -
 
     block = _extract_setup_path_shim_block()
     # Drive the block with the real env vars setup_path() sets.
-    script = f'set -e\nHERMES_BIN={pip_entry!s}\ncommand_link_dir={command_link_dir!s}\n{block}\n'
+    script = (
+        f"set -e\nHERMES_BIN={pip_entry!s}\n"
+        f"command_link_dir={command_link_dir!s}\n"
+        "log_error(){ :; }\nlog_info(){ :; }\n"
+        f"{_extract_launcher_guard()}\n{block}\n"
+    )
     result = subprocess.run(
         ["bash", "-c", script],
         capture_output=True,

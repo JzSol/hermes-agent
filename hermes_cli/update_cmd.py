@@ -31,13 +31,14 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time as _time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from hermes_cli.config import get_hermes_home
-from hermes_constants import venv_python_path
+from hermes_constants import project_venv_dir, venv_bin_dir, venv_python_path
 
 logger = logging.getLogger(__name__)
 
@@ -4254,59 +4255,125 @@ def _ensure_fhs_path_guard() -> None:
     if wrote_any:
         print("    (reload your shell or run 'source ~/.bashrc' to pick it up)")
 
+
+_MANAGED_POSIX_LAUNCHER_MARKER = "# Hermes Agent - managed public launcher."
+_IDO_LAUNCHER_NAMES = (
+    "hermes-ido-scan",
+    "hermes-ido-remind",
+    "hermes-ido-setup",
+)
+
+
+def _create_exclusive_launcher(path: Path, content: str) -> bool:
+    """Atomically create one executable launcher without replacing a path.
+
+    The hard-link publish step is an atomic ``O_EXCL`` equivalent for a fully
+    fsynced temporary file. It closes the check/write race without following
+    or replacing a user-created file or symlink.
+    """
+    if path.exists() or path.is_symlink():
+        return False
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary_path = Path(temporary)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            if hasattr(os, "fchmod"):
+                os.fchmod(handle.fileno(), 0o755)
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if not hasattr(os, "fchmod"):  # pragma: no cover - POSIX-only caller
+            os.chmod(temporary_path, 0o755)
+        try:
+            os.link(temporary_path, path, follow_symlinks=False)
+        except FileExistsError:
+            return False
+        return True
+    finally:
+        try:
+            temporary_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _posix_launcher_dirs() -> list[Path]:
+    """Public command directories used by supported POSIX installers."""
+    candidates = [Path.home() / ".local" / "bin", Path("/usr/local/bin")]
+    prefix = os.environ.get("PREFIX", "").strip()
+    if prefix and (
+        os.environ.get("TERMUX_VERSION") or "com.termux/files/usr" in prefix
+    ):
+        candidates.append(Path(prefix) / "bin")
+    return list(dict.fromkeys(candidates))
+
+
 def _ensure_acp_launcher() -> None:
-    r"""Self-heal: install a ``hermes-acp`` launcher next to the ``hermes`` one.
+    r"""Self-heal public ACP and IDO launchers next to ``hermes``.
 
     Mirrors the launcher block in ``scripts/install.sh`` so existing installs
-    gain the ACP command on ``hermes update`` without a reinstall.  ACP hosts
-    (Zed, JetBrains, Buzz Desktop) spawn the agent by resolving the
-    ``hermes-acp`` command name against the login-shell PATH; the console
-    script of that name lives inside the install's venv, which is not on that
-    PATH, so those hosts report Hermes as not installed even when it is.
+    gain the ACP and IDO commands on ``hermes update`` without a reinstall.
+    Their console scripts live inside the private install venv, which is not
+    placed on the login-shell PATH.
 
-    The shim simply delegates to the sibling ``hermes`` launcher with the
-    ``acp`` subcommand, which makes it correct for every install layout
-    (venv wrapper, FHS symlink, pipx/pip console script) without having to
-    reconstruct interpreter/entrypoint paths.
+    The ACP shim delegates to the sibling ``hermes`` launcher with the
+    ``acp`` subcommand. IDO shims delegate to the exact console scripts in
+    this checkout's private venv.
 
-    No-op on Windows (install.ps1 stages the ``hermes`` / ``hermes-acp``
-    launchers into the managed binary dir ``$HermesHome\bin`` and puts THAT
+    No-op on Windows (install.ps1 stages the public launchers into the managed
+    binary dir ``$HermesHome\bin`` and puts THAT
     on the user PATH — never the whole ``venv\Scripts`` dir, which would
     shadow the user's ``python`` (#83797); when those launchers go missing,
     ``hermes_cli._install_repair.ensure_windows_bin_launchers`` re-stages
-    them) and wherever a ``hermes-acp`` is already present next to the
-    ``hermes`` command.  Unwritable directories (e.g. ``/usr/local/bin`` as
-    non-root) are skipped silently.  Idempotent.
+    them). Existing paths are never replaced, including broken symlinks.
+    Unwritable directories are skipped silently. Idempotent.
     """
     if _m().sys.platform == "win32":
         # Windows launcher staging/repair lives in _install_repair
         # (ensure_windows_bin_launchers at process start,
         # migrate_windows_bin_path in this command's tail) — not here.
         return
-    for bin_dir in (Path.home() / ".local" / "bin", Path("/usr/local/bin")):
+    venv_dir = project_venv_dir(_m().PROJECT_ROOT)
+    venv_scripts = venv_bin_dir(venv_dir) if venv_dir is not None else None
+
+    for bin_dir in _posix_launcher_dirs():
         hermes_cmd = bin_dir / "hermes"
-        acp_cmd = bin_dir / "hermes-acp"
         try:
             if not (hermes_cmd.is_file() or hermes_cmd.is_symlink()):
                 continue
-            # Already present — a console script (pip/pipx install), an
-            # earlier shim, or a symlink. is_symlink() catches broken
-            # symlinks that exists() would miss; never follow-and-overwrite
-            # (the #21454 failure mode).
-            if acp_cmd.exists() or acp_cmd.is_symlink():
-                continue
-            shim = (
+            acp_cmd = bin_dir / "hermes-acp"
+            acp_shim = (
                 "#!/usr/bin/env bash\n"
-                "# Hermes Agent — ACP launcher (written by `hermes update`).\n"
+                f"{_MANAGED_POSIX_LAUNCHER_MARKER}\n"
                 "# ACP hosts (Zed, JetBrains, Buzz) resolve the agent by this\n"
                 "# command name on the login-shell PATH.\n"
-                f'exec "{hermes_cmd}" acp "$@"\n'
+                "unset PYTHONPATH\n"
+                "unset PYTHONHOME\n"
+                f"exec {shlex.quote(str(hermes_cmd))} acp \"$@\"\n"
             )
-            acp_cmd.write_text(shim, encoding="utf-8")
-            acp_cmd.chmod(acp_cmd.stat().st_mode | 0o755)
+            if _create_exclusive_launcher(acp_cmd, acp_shim):
+                print(f"  ✓ Installed hermes-acp launcher → {acp_cmd}")
+
+            if venv_scripts is None:
+                continue
+            for name in _IDO_LAUNCHER_NAMES:
+                source = venv_scripts / name
+                if not source.is_file() or not os.access(source, os.X_OK):
+                    continue
+                target = bin_dir / name
+                shim = (
+                    "#!/usr/bin/env bash\n"
+                    f"{_MANAGED_POSIX_LAUNCHER_MARKER}\n"
+                    "unset PYTHONPATH\n"
+                    "unset PYTHONHOME\n"
+                    f"exec {shlex.quote(str(source))} \"$@\"\n"
+                )
+                if _create_exclusive_launcher(target, shim):
+                    print(f"  ✓ Installed {name} launcher → {target}")
         except OSError:
             continue
-        print(f"  ✓ Installed hermes-acp launcher → {acp_cmd}")
+
 
 _PRE_UPDATE_SNAPSHOT_KEEP = 1
 # Sibling-profile snapshot ids from the current run's pre-update backup
@@ -8761,14 +8828,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception as e:
             logger.debug("FHS PATH guard check failed: %s", e)
 
-        # Self-heal the hermes-acp launcher for installs that predate it, so
-        # ACP hosts (Zed, JetBrains, Buzz) can resolve Hermes on PATH without
-        # a reinstall.  No-op on Windows (the launcher migration below owns
-        # that) and when already present.
+        # Self-heal public ACP/IDO launchers for installs that predate them.
+        # No-op on Windows (the launcher migration below owns that) and when
+        # the paths are already present.
         try:
             _ensure_acp_launcher()
         except Exception as e:
-            logger.debug("hermes-acp launcher self-heal failed: %s", e)
+            logger.debug("POSIX launcher self-heal failed: %s", e)
 
         # Migrate the Windows hermes launchers to the managed binary dir
         # (the default Hermes root's bin, next to the managed uv) and repair
