@@ -18,7 +18,9 @@ the async helper, never in the synchronous probe.
 from __future__ import annotations
 
 import json
+import math
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -246,6 +248,47 @@ def spawn_async_diagnostic(
     )
 
     try:
+        requested_timeout = float(timeout_seconds)
+    except (TypeError, ValueError):
+        requested_timeout = 5.0
+    if not math.isfinite(requested_timeout):
+        requested_timeout = 5.0
+    timeout_arg = str(max(1, math.ceil(requested_timeout)))
+    timeout_bin = shutil.which("timeout") or shutil.which("gtimeout")
+    if timeout_bin:
+        diagnostic_command = [timeout_bin, timeout_arg, "bash", "-c", script]
+    else:
+        # Stock macOS does not ship GNU timeout. Keep the diagnostic bounded
+        # with the same process-group watchdog used by scripts/install.sh:
+        # the command runs as a background job, is polled once per second,
+        # and the whole job is terminated when the deadline expires.
+        watchdog = (
+            'timeout_seconds=$1; shift; set -m; "$@" & command_pid=$!; '
+            "set +m; "
+            '( sleep "$timeout_seconds"; '
+            'if kill -0 "$command_pid" 2>/dev/null; then '
+            'kill -TERM "-$command_pid" 2>/dev/null || '
+            'kill -TERM "$command_pid" 2>/dev/null || true; '
+            "sleep 2; "
+            'kill -KILL "-$command_pid" 2>/dev/null || '
+            'kill -KILL "$command_pid" 2>/dev/null || true; fi ) & '
+            'watchdog_pid=$!; wait "$command_pid"; command_status=$?; '
+            'kill "$watchdog_pid" 2>/dev/null || true; '
+            'wait "$watchdog_pid" 2>/dev/null || true; '
+            'exit "$command_status"'
+        )
+        diagnostic_command = [
+            "bash",
+            "-c",
+            watchdog,
+            "hermes-diagnostic",
+            timeout_arg,
+            "bash",
+            "-c",
+            script,
+        ]
+
+    try:
         # Open the log file in append mode and let the subprocess inherit.
         # We use os.O_APPEND so concurrent diagnostics from rapid signals
         # don't trample each other.
@@ -260,7 +303,7 @@ def spawn_async_diagnostic(
         # start_new_session, a SIGKILL on our cgroup takes the diag down
         # before it can flush.
         proc = subprocess.Popen(
-            ["timeout", f"{timeout_seconds:.0f}", "bash", "-c", script],
+            diagnostic_command,
             stdout=fd,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,

@@ -8,6 +8,7 @@ import signal
 import sys
 import time
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -114,6 +115,83 @@ class TestSpawnAsyncDiagnostic:
         contents = log_path.read_text(encoding="utf-8", errors="replace")
         assert "shutdown diagnostic" in contents
         assert "SIGTERM" in contents
+
+    @pytest.mark.parametrize(
+        ("available", "expected"),
+        [
+            (
+                {"timeout": "/usr/bin/timeout", "gtimeout": "/usr/local/bin/gtimeout"},
+                "/usr/bin/timeout",
+            ),
+            (
+                {"timeout": None, "gtimeout": "/usr/local/bin/gtimeout"},
+                "/usr/local/bin/gtimeout",
+            ),
+        ],
+    )
+    def test_prefers_timeout_then_gtimeout(
+        self, tmp_path, monkeypatch, available, expected
+    ):
+        calls = []
+        lookups = []
+
+        def _which(name):
+            lookups.append(name)
+            return available[name]
+
+        monkeypatch.setattr(
+            sf.shutil, "which", _which
+        )
+        process = MagicMock(pid=1234)
+        monkeypatch.setattr(
+            sf.subprocess,
+            "Popen",
+            lambda command, **kwargs: calls.append(command) or process,
+        )
+
+        assert sf.spawn_async_diagnostic(tmp_path / "diag.log", "SIGTERM") == 1234
+        assert calls[0][0] == expected
+        expected_lookups = ["timeout"]
+        if not available["timeout"]:
+            expected_lookups.append("gtimeout")
+        assert lookups == expected_lookups
+
+    def test_uses_watchdog_when_no_timeout_binary_is_available(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(sf.shutil, "which", lambda _name: None)
+        calls = []
+        process = MagicMock(pid=1234)
+        monkeypatch.setattr(
+            sf.subprocess,
+            "Popen",
+            lambda command, **kwargs: calls.append(command) or process,
+        )
+
+        assert sf.spawn_async_diagnostic(tmp_path / "diag.log", "SIGTERM") == 1234
+        assert calls[0][:2] == ["bash", "-c"]
+        assert calls[0][4:7] == ["5", "bash", "-c"]
+        assert 'sleep "$timeout_seconds"' in calls[0][2]
+        assert "kill -TERM" in calls[0][2]
+        assert "eval" not in calls[0][2]
+
+    @pytest.mark.parametrize("timeout_seconds", [float("nan"), "invalid"])
+    def test_invalid_timeout_never_raises(
+        self, tmp_path, monkeypatch, timeout_seconds
+    ):
+        monkeypatch.setattr(sf.shutil, "which", lambda _name: None)
+        process = MagicMock(pid=1234)
+        calls = []
+        monkeypatch.setattr(
+            sf.subprocess,
+            "Popen",
+            lambda command, **kwargs: calls.append(command) or process,
+        )
+
+        assert sf.spawn_async_diagnostic(
+            tmp_path / "diag.log", "SIGTERM", timeout_seconds=timeout_seconds
+        ) == 1234
+        assert calls[0][4] == "5"
 
 
 # ---------------------------------------------------------------------------
