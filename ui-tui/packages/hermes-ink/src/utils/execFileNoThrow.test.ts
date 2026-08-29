@@ -91,7 +91,7 @@ describe.skipIf(onWindows)('execFileNoThrow with daemon-style children', () => {
     expect(Date.now() - start).toBeLessThan(2000)
   })
 
-  it("settles while the daemon is still alive when resolveOnExit is true", async () => {
+  it('settles while the daemon is still alive when resolveOnExit is true', async () => {
     const pidFile = join(scriptDir, 'sleeper-exit.pid')
     const longDaemonScript = join(scriptDir, 'fake-daemonizer-exit.sh')
     writeFileSync(longDaemonScript, '#!/bin/sh\nsleep 30 &\necho $! > "$1"\nexit 0\n')
