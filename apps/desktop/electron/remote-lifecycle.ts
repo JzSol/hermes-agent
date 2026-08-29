@@ -913,7 +913,12 @@ finally:
 sys.exit(result.returncode if result is not None else 1)
 `.trim()
 
-  return `python3 -c ${shq(script)} ${shq(mutexPath)} ${shq(command)}`
+  // mutexPath is a raw validated remote path. Expand it exactly once here so
+  // ~/... reaches Python as the remote user's absolute path and an absolute
+  // path loses its shell quotes before becoming argv[1]. Passing an already
+  // quoted fragment through shq() makes the quote characters literal and can
+  // create a "'" directory under the command's cwd.
+  return `python3 -c ${shq(script)} ${expandRemotePath(mutexPath)} ${shq(command)}`
 }
 
 /**
@@ -1045,9 +1050,9 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
   const subCmd = `serve --isolated --host 127.0.0.1 --port 0${tokenArg}${ownerArg}`
   const marker = expandRemotePath(`${remoteInstallRoot(opts.hermesHome || '~/.hermes')}/.hermes-update-in-progress`)
 
-  const updateMutex = expandRemotePath(
-    `${remoteInstallRoot(opts.hermesHome || '~/.hermes')}/.hermes-update-in-progress.mutex`
-  )
+  const updateMutex = `${remoteInstallRoot(
+    opts.hermesHome || '~/.hermes'
+  )}/.hermes-update-in-progress.mutex`
 
   // The marker probe, ownership reservation, process creation, and initial
   // lockfile publication must be one remote command. A second Desktop process

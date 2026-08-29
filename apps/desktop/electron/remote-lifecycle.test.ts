@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { exec as execCallback, spawn } from 'node:child_process'
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { access, chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
@@ -853,7 +853,18 @@ done
       logPath
     })
 
+    assert.ok(
+      command.includes(`${directory}/home/.hermes-update-in-progress.mutex`),
+      'the mutex argv must contain the expanded path'
+    )
+
     await exec(command, { shell: '/bin/bash' })
+    await access(path.join(directory, 'home', '.hermes-update-in-progress.mutex'))
+    await assert.rejects(
+      access(path.join(process.cwd(), `'${directory}`, 'home', ".hermes-update-in-progress.mutex'")),
+      (error: any) => error?.code === 'ENOENT',
+      'shell quote characters must not become literal path components'
+    )
 
     for (let attempt = 0; attempt < 40; attempt += 1) {
       try {
