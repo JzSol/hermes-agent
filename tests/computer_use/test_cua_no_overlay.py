@@ -226,6 +226,7 @@ class TestMcpArgsOverlayFlag:
 
 
 class TestEmbeddedDaemonOverlayFlag:
+    @pytest.mark.linux_only
     def test_serve_process_disables_overlay_when_policy_requires_it(self):
         daemon = cua_backend._EmbeddedCuaDaemon("/usr/bin/cua-driver", "unrestricted")
         process = MagicMock()
@@ -250,3 +251,41 @@ class TestEmbeddedDaemonOverlayFlag:
         command = popen.call_args.args[0]
         assert command[:2] == ["/usr/bin/cua-driver", "serve"]
         assert "--no-overlay" in command
+
+    @pytest.mark.macos_only
+    def test_serve_process_uses_verified_cua_driver_app(self, tmp_path):
+        app_path = tmp_path / "CuaDriver.app"
+        driver_path = app_path / "Contents" / "MacOS" / "cua-driver"
+        driver_path.parent.mkdir(parents=True)
+        driver_path.write_bytes(b"")
+        driver_path.chmod(0o755)
+
+        daemon = cua_backend._EmbeddedCuaDaemon(str(driver_path), "unrestricted")
+        process = MagicMock()
+        process.poll.return_value = None
+        status = MagicMock(returncode=0)
+
+        with patch.object(
+            cua_backend,
+            "_resolve_mcp_invocation",
+            return_value=(str(driver_path), ["mcp"]),
+        ), patch.object(
+            cua_backend, "_cua_no_overlay", return_value=True,
+        ), patch.object(
+            cua_backend, "_cua_driver_supports_no_overlay", return_value=True,
+        ), patch.object(
+            cua_backend, "_validate_cua_driver_app_signature",
+        ) as validate_signature, patch.object(
+            cua_backend.subprocess, "Popen", return_value=process,
+        ) as popen, patch.object(
+            cua_backend.subprocess, "run", return_value=status,
+        ), patch.object(cua_backend.threading, "Thread"):
+            daemon.start()
+
+        command = popen.call_args.args[0]
+        assert command[:6] == [
+            "/usr/bin/open", "-n", "-g", "-a", str(app_path), "--args"
+        ]
+        assert command[6:8] == ["serve", "--embedded"]
+        assert "--no-overlay" in command
+        validate_signature.assert_called_once_with(str(app_path))

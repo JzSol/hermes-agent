@@ -199,6 +199,15 @@ class TestGetServicePidsScoping:
     def _wire(self, monkeypatch):
         monkeypatch.setattr(gw, "is_macos", lambda: True)
         monkeypatch.setattr(gw, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(
+            gw.subprocess,
+            "run",
+            lambda command, **_kwargs: (
+                _completed(0, "")
+                if command == ["launchctl", "list"]
+                else pytest.fail(f"unexpected host subprocess call: {command!r}")
+            ),
+        )
         monkeypatch.setattr(gw, "get_launchd_label", lambda: "ai.hermes.gateway")
         monkeypatch.setattr(
             gw,
@@ -642,13 +651,15 @@ class TestWaitForLaunchdServicePid:
 
 
 class TestIncompleteWarningMentionsLaunchctl:
-    def test_launchd_labels_get_launchctl_hint(self, capsys):
+    def test_launchd_labels_get_launchctl_hint(self, monkeypatch, capsys):
+        monkeypatch.setattr(gw, "is_macos", lambda: True)
         _warn_incomplete_gateway_fleet_restart(["ai.hermes.gateway-merit-ops"])
         out = capsys.readouterr().out
         assert "Update incomplete" in out
-        assert "launchctl kickstart -k" in out
+        assert "launchctl bootstrap" in out
 
-    def test_systemd_units_keep_systemctl_hint(self, capsys):
+    def test_systemd_units_keep_systemctl_hint(self, monkeypatch, capsys):
+        monkeypatch.setattr(gw, "is_macos", lambda: False)
         _warn_incomplete_gateway_fleet_restart(["hermes-gateway-coder"])
         out = capsys.readouterr().out
         assert "systemctl" in out

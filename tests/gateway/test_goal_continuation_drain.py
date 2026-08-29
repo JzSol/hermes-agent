@@ -78,6 +78,10 @@ CONTINUATION_TEXT = "[Continuing toward your standing goal]\nGoal: ship it"
 @pytest.fixture()
 def hermes_home(tmp_path, monkeypatch):
     from pathlib import Path
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
 
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -86,9 +90,23 @@ def hermes_home(tmp_path, monkeypatch):
 
     from hermes_cli import goals
 
-    goals._DB_CACHE.clear()
-    yield home
-    goals._DB_CACHE.clear()
+    token = set_hermes_home_override(str(home))
+    db = None
+    try:
+        goals._DB_CACHE.clear()
+        # These tests enter GoalManager from an asyncio loop. Production
+        # performs cold database bootstrap off-loop with a deliberately
+        # bounded wait, but a fixture should not depend on host disk speed.
+        db = goals._get_session_db()
+        assert db is not None
+        yield home
+    finally:
+        goals._DB_CACHE.clear()
+        try:
+            if db is not None:
+                db.close()
+        finally:
+            reset_hermes_home_override(token)
 
 
 @pytest.mark.asyncio

@@ -16,6 +16,9 @@ import pytest
 from hermes_cli import main as hermes_main
 
 
+pytestmark = pytest.mark.usefixtures("update_runtime_isolation")
+
+
 def _make_head_moved_side_effect(pre_sha="abc123", post_sha="def456"):
     """Simulate git commands where HEAD advances from pre_sha to post_sha."""
     calls = {"n": 0}
@@ -105,22 +108,6 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     monkeypatch.setattr(hermes_main, "_clear_update_incomplete_marker", lambda: None)
     # Gateway restart path (called after a successful update).
     monkeypatch.setattr(hermes_main, "_finish_dashboard_update_cleanup", lambda *a: None)
-    # Keep the (now surfaced — #78574) gateway auto-restart phase away from
-    # this machine's real gateways: discovery returns nothing, systemd is
-    # unsupported, so the phase is a clean no-op for both snapshots.
-    import hermes_cli.gateway as hermes_gateway
-
-    monkeypatch.setattr(
-        hermes_gateway, "find_gateway_pids", lambda all_profiles=False: []
-    )
-    monkeypatch.setattr(
-        hermes_gateway, "supports_systemd_services", lambda: False
-    )
-    monkeypatch.setattr(
-        hermes_gateway, "find_profile_gateway_processes", lambda *a, **k: []
-    )
-
-
 def test_update_success_when_head_moves(monkeypatch, tmp_path, capsys):
     """When the pull advances HEAD, the update proceeds normally."""
     args = SimpleNamespace(branch=None, yes=False, force=False, force_venv=False)

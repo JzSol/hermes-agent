@@ -98,8 +98,8 @@ def _needs_interpreter(bin_path: Path) -> bool:
         # Native binary (uv tool shim, PyInstaller, distro package) — its own
         # loader is self-sufficient.
         return False
-    shebang = head.decode("utf-8", errors="replace").strip().lower()
-    if "python" not in shebang:
+    shebang = head.decode("utf-8", errors="replace").strip()
+    if "python" not in shebang.lower():
         # A shell wrapper (e.g. the installer's bash launcher) execs the venv
         # python itself — leave it alone.
         return False

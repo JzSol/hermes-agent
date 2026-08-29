@@ -122,9 +122,19 @@ from gateway.scale_to_zero import (  # noqa: E402 - grouped with their section
 _FLY_ENV = {FLY_APP_NAME_ENV: "hermes-agent-stg-test", FLY_MACHINE_ID_ENV: "d891234f"}
 
 
-def _fake_flaps(tmp_path, status_line, capture):
+@pytest.fixture
+def short_socket_cwd(tmp_path, monkeypatch):
+    """Run socket calls from a temp cwd so the AF_UNIX argument stays short."""
+    monkeypatch.chdir(tmp_path)
+    return tmp_path
+
+
+def _fake_flaps(status_line, capture):
     """One-shot unix-socket HTTP server standing in for flaps."""
-    sock_path = str(tmp_path / "fly-api.sock")
+    # macOS exposes /tmp through /private/tmp and AF_UNIX paths are capped at
+    # 104 bytes. The fixture changes into pytest's temp directory so this
+    # relative socket name stays short without relying on a global /tmp path.
+    sock_path = "fly-api.sock"
     server = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
     server.bind(sock_path)
     server.listen(1)
@@ -144,15 +154,19 @@ def _fake_flaps(tmp_path, status_line, capture):
                 f"HTTP/1.1 {status_line}\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}".encode()
             )
         server.close()
+        try:
+            os.unlink(sock_path)
+        except FileNotFoundError:
+            pass
 
     t = threading.Thread(target=serve, daemon=True)
     t.start()
     return sock_path, t
 
 
-def test_suspend_self_posts_suspend_for_this_machine(tmp_path):
+def test_suspend_self_posts_suspend_for_this_machine(short_socket_cwd):
     captured: list[bytes] = []
-    sock_path, t = _fake_flaps(tmp_path, "200 OK", captured)
+    sock_path, t = _fake_flaps("200 OK", captured)
     assert suspend_self(_FLY_ENV, socket_path=sock_path) is True
     t.join(timeout=5)
     request = captured[0].decode()
@@ -164,9 +178,9 @@ def test_suspend_self_posts_suspend_for_this_machine(tmp_path):
     assert "Host: flaps\r\n" in request
 
 
-def test_suspend_self_non_2xx_is_false_not_raise(tmp_path):
+def test_suspend_self_non_2xx_is_false_not_raise(short_socket_cwd):
     captured: list[bytes] = []
-    sock_path, t = _fake_flaps(tmp_path, "412 Precondition Failed", captured)
+    sock_path, t = _fake_flaps("412 Precondition Failed", captured)
     assert suspend_self(_FLY_ENV, socket_path=sock_path) is False
     t.join(timeout=5)
 

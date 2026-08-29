@@ -9,6 +9,9 @@ from hermes_cli import config as hermes_config
 from hermes_cli import main as hermes_main
 
 
+pytestmark = pytest.mark.usefixtures("update_runtime_isolation")
+
+
 # ---------------------------------------------------------------------------
 # Managed-uv compatibility for tests that patch shutil.which
 # ---------------------------------------------------------------------------

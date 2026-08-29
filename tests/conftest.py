@@ -36,6 +36,41 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+@pytest.fixture
+def update_runtime_isolation(monkeypatch):
+    """Keep opted-in update tests away from host services and CUA binaries.
+
+    This fixture deliberately wraps, rather than replaces, ``shutil.which``:
+    update tests still exercise the real uv/npm availability probes while the
+    optional cua-driver refresh remains absent from the test runtime.
+    """
+    import hermes_cli.gateway as gateway
+    import hermes_cli.main as main
+    from hermes_cli import update_cmd
+
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(gateway, "find_gateway_pids", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        gateway, "find_profile_gateway_processes", lambda *args, **kwargs: []
+    )
+    monkeypatch.setattr(gateway, "_get_service_pids", lambda *args, **kwargs: set())
+    # The real purge evicts the patched gateway module from sys.modules during
+    # an update, after which a fresh import would rediscover this host's
+    # launchd/systemd state. These tests exercise update control flow, not the
+    # purge itself, so keep the isolated module graph in place.
+    monkeypatch.setattr(main, "_purge_stale_hermes_modules", lambda: None)
+
+    real_which = shutil.which
+
+    def _which(name, mode=os.F_OK, path=None):
+        if name == "cua-driver":
+            return None
+        return real_which(name, mode=mode, path=path)
+
+    monkeypatch.setattr(update_cmd.shutil, "which", _which)
+
+
 # ── Sandbox HERMES_HOME before ANY test module is imported ──────────────────
 # `hermes_cli/main.py` calls `setup_logging()` at MODULE level, which resolves
 # `get_hermes_home()` and attaches rotating file handlers to the ROOT logger.
@@ -1351,6 +1386,12 @@ def _live_system_guard(request, monkeypatch):
             for parent in walker.parents():
                 if parent.pid == test_pid:
                     return True
+        except _psutil.NoSuchProcess:
+            # The child exited and was reaped between Process(pid) above and
+            # the ancestry walk. Signalling that stale PID is harmless (and
+            # the real os.kill will report ESRCH); do not misclassify this
+            # normal cleanup race as an attempt to signal a foreign process.
+            return True
         except Exception:
             return False
         return False

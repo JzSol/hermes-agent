@@ -409,6 +409,10 @@ class TestTranscribeLocalExtended:
 
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
              patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             patch(
+                 "tools.transcription_tools._should_force_faster_whisper_cpu",
+                 return_value=False,
+             ), \
              patch("tools.transcription_tools._local_model", None), \
              patch("tools.transcription_tools._local_model_name", None), \
              patch("tools.transcription_tools._load_stt_config", return_value=fake_config):
@@ -1222,6 +1226,7 @@ class TestRunCommandSttIdleTimeout:
         assert "tick 3" in result.stderr
         assert "done" in result.stdout
 
+    @pytest.mark.live_system_guard_bypass  # cleanup signals this test's own child
     def test_silent_stall_still_times_out(self, tmp_path):
         """A silently stalled command is killed once the idle window elapses,
         and pre-stall output is preserved on the TimeoutExpired."""

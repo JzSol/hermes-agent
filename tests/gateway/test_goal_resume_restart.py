@@ -45,13 +45,21 @@ def hermes_home(tmp_path, monkeypatch):
     )
 
     token = set_hermes_home_override(str(home))
-    goals._DB_CACHE.clear()
-    yield home
+    db = None
     try:
-        reset_hermes_home_override(token)
-    except Exception:
-        pass
-    goals._DB_CACHE.clear()
+        goals._DB_CACHE.clear()
+        # Prewarm synchronously: the code under test runs on the event loop,
+        # where production intentionally bounds cold SessionDB bootstrap.
+        db = goals._get_session_db()
+        assert db is not None
+        yield home
+    finally:
+        goals._DB_CACHE.clear()
+        try:
+            if db is not None:
+                db.close()
+        finally:
+            reset_hermes_home_override(token)
 
 
 def _exhaust_budget(session_id: str, goal_text: str = "ship the benchmark"):

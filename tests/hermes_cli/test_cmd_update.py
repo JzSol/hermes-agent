@@ -10,6 +10,9 @@ import pytest
 from hermes_cli.main import cmd_update, PROJECT_ROOT
 
 
+pytestmark = pytest.mark.usefixtures("update_runtime_isolation")
+
+
 def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
     """Build a side_effect function for subprocess.run that simulates git commands."""
 

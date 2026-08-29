@@ -2,6 +2,9 @@
 
 import http.server
 import json
+import shlex
+import subprocess
+import sys
 import threading
 import time
 
@@ -130,9 +133,16 @@ def _free_port() -> int:
 class TestReadiness:
     def test_readiness_against_live_server(self, tmp_path):
         port = _free_port()
+        python_command = (
+            subprocess.list2cmdline([sys.executable])
+            if sys.platform == "win32"
+            else shlex.quote(sys.executable)
+        )
         recipe = Recipe(
             name="x",
-            start=f"python3 -m http.server {port} --bind 127.0.0.1",
+            start=(
+                f"{python_command} -m http.server {port} --bind 127.0.0.1"
+            ),
             port=port,
         )
         result = run_verify(tmp_path, recipe, phases=("start",), ready_timeout=15)

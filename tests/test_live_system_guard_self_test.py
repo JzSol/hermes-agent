@@ -116,6 +116,30 @@ def test_os_kill_blocks_negative_one():
         os.kill(-1, signal.SIGTERM)
 
 
+def test_os_kill_allows_child_that_disappears_during_ancestry_walk(monkeypatch):
+    """A reaped child between Process(pid) and parents() is stale, not foreign."""
+    import psutil
+
+    stale_pid = 2_000_000_000
+    real_process = psutil.Process
+
+    class _VanishedProcess:
+        def parents(self):
+            raise psutil.NoSuchProcess(stale_pid)
+
+    def _process(pid):
+        if pid == stale_pid:
+            return _VanishedProcess()
+        return real_process(pid)
+
+    monkeypatch.setattr(psutil, "Process", _process)
+
+    # The guard must pass this through. The real primitive then reports that
+    # the deliberately impossible PID does not exist.
+    with pytest.raises(ProcessLookupError):
+        os.kill(stale_pid, signal.SIGTERM)
+
+
 @pytest.mark.skipif(not hasattr(os, "killpg"), reason="killpg POSIX-only")
 def test_os_killpg_blocks_foreign_pgid():
     with pytest.raises(RuntimeError, match="live-system guard"):

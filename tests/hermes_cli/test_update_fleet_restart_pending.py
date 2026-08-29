@@ -26,6 +26,9 @@ from hermes_cli import update_cmd
 from hermes_constants import get_hermes_home
 
 
+pytestmark = pytest.mark.usefixtures("update_runtime_isolation")
+
+
 def _make_head_moved_side_effect(pre_sha="abc123", post_sha="def456"):
     """Simulate git commands where HEAD advances from pre_sha to post_sha."""
     calls = {"n": 0}
@@ -108,15 +111,6 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     )
     monkeypatch.setattr(update_cmd, "_update_node_dependencies", lambda: [])
 
-    import hermes_cli.gateway as hermes_gateway
-
-    monkeypatch.setattr(
-        hermes_gateway, "find_gateway_pids", lambda all_profiles=False: []
-    )
-    monkeypatch.setattr(hermes_gateway, "supports_systemd_services", lambda: False)
-    monkeypatch.setattr(
-        hermes_gateway, "find_profile_gateway_processes", lambda *a, **k: []
-    )
     monkeypatch.setattr(
         "hermes_cli.update_receipt.collect_fleet_versions",
         lambda **k: [],

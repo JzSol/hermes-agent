@@ -16,6 +16,7 @@ module graph from the updated checkout.
 
 from __future__ import annotations
 
+import builtins
 import sys
 import types
 
@@ -134,3 +135,31 @@ def test_stale_symbol_scenario_end_to_end():
         sys.modules.pop(name, None)
         if real is not None:
             sys.modules[name] = real
+
+
+def test_pending_restart_runs_real_purge_before_gateway_import(monkeypatch):
+    """The restart integration must not bypass the purge tested above.
+
+    Full update-flow tests intentionally freeze their patched module graph for
+    host isolation. This focused case keeps the production purge enabled and
+    makes the freshly imported gateway report an empty fleet, proving both the
+    call boundary and the safe post-purge import path.
+    """
+    probe_name = "hermes_cli._purge_integration_probe"
+    sys.modules[probe_name] = _fake_module(probe_name)
+    real_import = builtins.__import__
+
+    def _safe_import(name, globals=None, locals=None, fromlist=(), level=0):
+        module = real_import(name, globals, locals, fromlist, level)
+        if name == "hermes_cli.gateway":
+            monkeypatch.setattr(
+                module,
+                "find_gateway_pids",
+                lambda *args, **kwargs: [],
+            )
+        return module
+
+    monkeypatch.setattr(builtins, "__import__", _safe_import)
+
+    assert update_cmd._run_pending_fleet_restart() is True
+    assert probe_name not in sys.modules
