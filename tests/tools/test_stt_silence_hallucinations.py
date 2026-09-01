@@ -40,6 +40,23 @@ class TestBuildLocalTranscribeKwargs:
             is False
         )
 
+    def test_beam_size_defaults_to_accuracy_first(self):
+        assert build_local_transcribe_kwargs({})["beam_size"] == 5
+
+    def test_beam_size_supports_bounded_low_latency_decode(self):
+        assert build_local_transcribe_kwargs(
+            {"local": {"beam_size": 1}}
+        )["beam_size"] == 1
+        assert build_local_transcribe_kwargs(
+            {"local": {"beam_size": 0}}
+        )["beam_size"] == 1
+        assert build_local_transcribe_kwargs(
+            {"local": {"beam_size": 100}}
+        )["beam_size"] == 20
+        assert build_local_transcribe_kwargs(
+            {"local": {"beam_size": "invalid"}}
+        )["beam_size"] == 5
+
 
     def test_confidence_thresholds_default_to_faster_whisper_values(self):
         kwargs = build_local_transcribe_kwargs({})

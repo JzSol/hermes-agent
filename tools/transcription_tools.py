@@ -1818,6 +1818,8 @@ def _load_local_whisper_model(model_name: str, device: str = "auto", compute_typ
 _VAD_MIN_SILENCE_MS_DEFAULT = 500
 _NO_SPEECH_PROB_THRESHOLD_DEFAULT = 0.6
 _LOGPROB_THRESHOLD_DEFAULT = -1.0
+_BEAM_SIZE_DEFAULT = 5
+_BEAM_SIZE_MAX = 20
 
 
 def build_local_transcribe_kwargs(stt_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -1829,8 +1831,14 @@ def build_local_transcribe_kwargs(stt_config: Optional[Dict[str, Any]] = None) -
     stt_config = stt_config if isinstance(stt_config, dict) else _load_stt_config()
     local_cfg = stt_config.get("local") or {}
 
+    try:
+        beam_size = int(local_cfg.get("beam_size", _BEAM_SIZE_DEFAULT))
+    except (TypeError, ValueError):
+        beam_size = _BEAM_SIZE_DEFAULT
+    beam_size = min(_BEAM_SIZE_MAX, max(1, beam_size))
+
     kwargs: Dict[str, Any] = {
-        "beam_size": 5,
+        "beam_size": beam_size,
         # Don't feed the previous window's text back as a prompt: a single
         # hallucinated token otherwise seeds a self-reinforcing run of them.
         "condition_on_previous_text": False,

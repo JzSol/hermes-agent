@@ -1953,6 +1953,7 @@ DEFAULT_CONFIG = {
             "model": "base",  # tiny, base, small, medium, large-v3
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
             "initial_prompt": "",
+            "beam_size": 5,  # 1=fast greedy decoding; 5=slower accuracy-first default
             # Anti-hallucination hardening (faster-whisper decodes junk tokens
             # from silence/noise without these):
             "vad": True,  # Silero VAD filter — silence never reaches whisper. false = old raw behavior (music/ambient).
