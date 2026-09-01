@@ -191,6 +191,13 @@ voice:
   client_direct: false
 ```
 
+Relay clients may send optional `language` and `prompt` fields with the JSON
+`POST /api/audio/transcribe` request. These are per-recording hints:
+the configured STT values form the baseline, request values override that
+baseline, and a `pre_transcription` hook may make the final adjustment. Keep
+the prompt to vocabulary and proper nouns rather than secrets because hosted
+providers receive it alongside the audio.
+
 Client-direct wire support: OpenAI (incl. Nous-managed audio), Groq, Mistral, and DeepInfra via the OpenAI-compatible shapes, xAI Grok STT, and ElevenLabs STT + TTS. xAI configured through OAuth stays on the relay (the OAuth bearer refreshes server-side).
 
 ### Barge-in

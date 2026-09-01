@@ -2938,6 +2938,9 @@ def _transcribe_prepared_audio(
     file_path: str,
     model: Optional[str] = None,
     source: Optional[str] = None,
+    *,
+    language: Optional[str] = None,
+    prompt: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Transcribe an audio file using the configured STT provider.
@@ -3012,7 +3015,15 @@ def _transcribe_prepared_audio(
             trim_cleanup_dir = os.path.dirname(trimmed)
 
     try:
-        return _dispatch_stt_provider(file_path, provider, stt_config, model, source)
+        return _dispatch_stt_provider(
+            file_path,
+            provider,
+            stt_config,
+            model,
+            source,
+            language=language,
+            prompt=prompt,
+        )
     finally:
         if trim_cleanup_dir:
             shutil.rmtree(trim_cleanup_dir, ignore_errors=True)
@@ -3024,15 +3035,26 @@ def _dispatch_stt_provider(
     stt_config: Dict[str, Any],
     model: Optional[str] = None,
     source: Optional[str] = None,
+    *,
+    language: Optional[str] = None,
+    prompt: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Route *file_path* to the handler for *provider* (built-in > command > plugin)."""
     # Optional static transcription prompt (``stt.prompt`` in config.yaml):
     # vocabulary/context hints threaded to prompt-capable backends.
     # Ordering: config is the base; pre_transcription hook results mutate on
     # top, in registration order, so the last hook to set a field wins.
-    prompt = stt_config.get("prompt")
-    if not isinstance(prompt, str) or not prompt.strip():
-        prompt = None
+    config_prompt = stt_config.get("prompt")
+    if not isinstance(config_prompt, str) or not config_prompt.strip():
+        config_prompt = None
+    resolved_prompt = config_prompt
+    if prompt is not None:
+        resolved_prompt = prompt.strip() or None
+
+    configured_language = _get_stt_section(stt_config, provider).get("language")
+    resolved_language = language.strip() if isinstance(language, str) else None
+    if not resolved_language:
+        resolved_language = configured_language
 
     # pre_transcription plugin hook — fires after provider resolution and
     # BEFORE any backend (built-in, command-type, or plugin-registered) is
@@ -3040,19 +3062,21 @@ def _dispatch_stt_provider(
     # read-only. The helper short-circuits on has_hook() so the no-hook
     # dispatch path stays byte-identical. ``language`` stays None unless a
     # hook overrides it — backends keep their own config/env resolution.
-    model, language, prompt = _apply_pre_transcription_hook(
+    base_language = resolved_language
+    model, hook_language, resolved_prompt = _apply_pre_transcription_hook(
         file_path=file_path,
         provider=provider,
         model=model,
-        language=_get_stt_section(stt_config, provider).get("language"),
-        prompt=prompt,
+        language=resolved_language,
+        prompt=resolved_prompt,
         source=source,
     )
+    resolved_language = hook_language or base_language
 
     # Whisper-family prompt windows top out around 224 tokens — truncate
     # (keeping the tail) with a warning rather than erroring or letting a
     # strict server reject the request.
-    prompt = _enforce_prompt_length_limit(prompt, provider)
+    resolved_prompt = _enforce_prompt_length_limit(resolved_prompt, provider)
 
     if provider == "local":
         local_cfg = stt_config.get("local") or {}
@@ -3060,7 +3084,10 @@ def _dispatch_stt_provider(
             model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
         )
         return _transcribe_local(
-            file_path, model_name, language=language, prompt=prompt,
+            file_path,
+            model_name,
+            language=resolved_language,
+            prompt=resolved_prompt,
         )
 
     if provider == "local_command":
@@ -3069,42 +3096,60 @@ def _dispatch_stt_provider(
             model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
         )
         return _transcribe_local_command(
-            file_path, model_name, language=language, prompt=prompt,
+            file_path,
+            model_name,
+            language=resolved_language,
+            prompt=resolved_prompt,
         )
 
     if provider == "groq":
         groq_cfg = stt_config.get("groq") or {}
         model_name = model or groq_cfg.get("model") or DEFAULT_GROQ_STT_MODEL
         return _transcribe_groq(
-            file_path, model_name, language=language, prompt=prompt,
+            file_path,
+            model_name,
+            language=resolved_language,
+            prompt=resolved_prompt,
         )
 
     if provider == "openai":
         openai_cfg = stt_config.get("openai") or {}
         model_name = model or openai_cfg.get("model", DEFAULT_STT_MODEL)
         return _transcribe_openai(
-            file_path, model_name, language=language, prompt=prompt,
+            file_path,
+            model_name,
+            language=resolved_language,
+            prompt=resolved_prompt,
         )
 
     if provider == "mistral":
         mistral_cfg = stt_config.get("mistral") or {}
         model_name = model or mistral_cfg.get("model", DEFAULT_MISTRAL_STT_MODEL)
         return _transcribe_mistral(
-            file_path, model_name, language=language, prompt=prompt,
+            file_path,
+            model_name,
+            language=resolved_language,
+            prompt=resolved_prompt,
         )
 
     if provider == "xai":
         # xAI Grok STT doesn't use a model parameter — pass through for logging
         model_name = model or "grok-stt"
         return _transcribe_xai(
-            file_path, model_name, language=language, prompt=prompt,
+            file_path,
+            model_name,
+            language=resolved_language,
+            prompt=resolved_prompt,
         )
 
     if provider == "elevenlabs":
         elevenlabs_cfg = stt_config.get("elevenlabs") or {}
         model_name = model or elevenlabs_cfg.get("model_id", DEFAULT_ELEVENLABS_STT_MODEL)
         return _transcribe_elevenlabs(
-            file_path, model_name, language=language, prompt=prompt,
+            file_path,
+            model_name,
+            language=resolved_language,
+            prompt=resolved_prompt,
         )
 
     if provider == "deepinfra":
@@ -3112,7 +3157,10 @@ def _dispatch_stt_provider(
         di_config = di_config if isinstance(di_config, dict) else {}
         model_name = model or di_config.get("model") or ""
         return _transcribe_deepinfra(
-            file_path, model_name, language=language, prompt=prompt,
+            file_path,
+            model_name,
+            language=resolved_language,
+            prompt=resolved_prompt,
         )
 
     # User-declared command-type provider
@@ -3129,8 +3177,8 @@ def _dispatch_stt_provider(
             command_provider_config,
             stt_config,
             model_override=model,
-            language_override=language,
-            prompt=prompt,
+            language_override=resolved_language,
+            prompt=resolved_prompt,
         )
 
     # Plugin-registered STT backend (e.g. OpenRouter, SenseAudio,
@@ -3147,7 +3195,7 @@ def _dispatch_stt_provider(
     # forwards ``language`` from there. Top-level ``model`` argument
     # overrides any config-set model.
     plugin_cfg = stt_config.get(provider, {}) if isinstance(stt_config.get(provider), dict) else {}
-    plugin_language = language or _resolve_stt_language(provider, stt_config)
+    plugin_language = resolved_language or _resolve_stt_language(provider, stt_config)
     plugin_model = model or plugin_cfg.get("model")
     plugin_result = _dispatch_to_plugin_provider(
         file_path,
@@ -3155,7 +3203,7 @@ def _dispatch_stt_provider(
         stt_config,
         model=plugin_model,
         language=plugin_language,
-        prompt=prompt,
+        prompt=resolved_prompt,
     )
     if plugin_result is not None:
         return plugin_result
@@ -3198,6 +3246,9 @@ def transcribe_audio(
     file_path: str,
     model: Optional[str] = None,
     source: Optional[str] = None,
+    *,
+    language: Optional[str] = None,
+    prompt: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Safely validate, preprocess supported inputs, and dispatch transcription.
 
@@ -3236,7 +3287,13 @@ def transcribe_audio(
         prepared_error = _validate_audio_file(prepared_path, enforce_size_limit=False)
         if prepared_error:
             return prepared_error
-        return _transcribe_prepared_audio(prepared_path, model, source)
+        return _transcribe_prepared_audio(
+            prepared_path,
+            model,
+            source,
+            language=language,
+            prompt=prompt,
+        )
     finally:
         if cleanup_dir:
             shutil.rmtree(cleanup_dir, ignore_errors=True)

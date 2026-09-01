@@ -1399,7 +1399,14 @@ def voice_stop_hint() -> str:
 # ============================================================================
 # STT dispatch
 # ============================================================================
-def transcribe_recording(wav_path: str, model: Optional[str] = None) -> Dict[str, Any]:
+def transcribe_recording(
+    wav_path: str,
+    model: Optional[str] = None,
+    *,
+    language: Optional[str] = None,
+    prompt: Optional[str] = None,
+    source: str = "voice_mode",
+) -> Dict[str, Any]:
     """Transcribe a WAV recording using the existing Whisper pipeline.
 
     Delegates to ``tools.transcription_tools.transcribe_audio()``.
@@ -1414,13 +1421,26 @@ def transcribe_recording(wav_path: str, model: Optional[str] = None) -> Dict[str
     """
     from tools.transcription_tools import MAX_FILE_SIZE, transcribe_audio
 
-    result = transcribe_audio(wav_path, model=model, source="voice_mode")
+    result = transcribe_audio(
+        wav_path,
+        model=model,
+        source=source,
+        language=language,
+        prompt=prompt,
+    )
 
     # Only chunk when the provider itself reports "File too large" —
     # local providers (faster-whisper, whisper.cpp, etc.) have no upload
     # cap so ``transcribe_audio`` will never return this error for them.
     if not result.get("success") and "File too large" in result.get("error", ""):
-        result = _transcribe_wav_in_chunks(wav_path, model=model, max_file_size=MAX_FILE_SIZE)
+        result = _transcribe_wav_in_chunks(
+            wav_path,
+            model=model,
+            max_file_size=MAX_FILE_SIZE,
+            language=language,
+            prompt=prompt,
+            source=source,
+        )
 
     # Filter out Whisper hallucinations (common on silent/near-silent audio).
     # A configured voice-chat stop phrase is checked FIRST and always survives:
@@ -1459,6 +1479,9 @@ def _transcribe_wav_in_chunks(
     *,
     model: Optional[str],
     max_file_size: int,
+    language: Optional[str] = None,
+    prompt: Optional[str] = None,
+    source: str = "voice_mode",
 ) -> Dict[str, Any]:
     """Split an oversized WAV into provider-sized chunks and join transcripts."""
     from tools.transcription_tools import transcribe_audio
@@ -1473,7 +1496,13 @@ def _transcribe_wav_in_chunks(
 
         logger.info("Transcribing oversized WAV in %d chunks: %s", len(chunk_paths), wav_path)
         for index, chunk_path in enumerate(chunk_paths, start=1):
-            result = transcribe_audio(chunk_path, model=model, source="voice_mode")
+            result = transcribe_audio(
+                chunk_path,
+                model=model,
+                source=source,
+                language=language,
+                prompt=prompt,
+            )
             if not result.get("success"):
                 error = result.get("error", "Unknown transcription error")
                 return {

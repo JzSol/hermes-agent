@@ -347,6 +347,58 @@ class TestSttPromptConfig:
         _, kwargs = backend.call_args
         assert kwargs["prompt"] == PROMPT
 
+
+class TestPerRequestOverrides:
+    def test_request_values_override_config_before_hook(
+        self, monkeypatch, tmp_path,
+    ):
+        audio = _make_audio(tmp_path)
+        captured = _fake_hooks(monkeypatch, [])
+        backend = MagicMock(return_value={"success": True, "transcript": "hi"})
+        cfg_patch, prov_patch = _dispatch_ctx(
+            {
+                "provider": "openai",
+                "prompt": "config glossary",
+                "openai": {"language": "fr"},
+            },
+            "openai",
+        )
+
+        with cfg_patch, prov_patch, \
+             patch("tools.transcription_tools._transcribe_openai", backend):
+            transcription_tools.transcribe_audio(
+                audio,
+                source="audio_upload",
+                language="en",
+                prompt="Adam, Hermes",
+            )
+
+        assert captured["kwargs"]["language"] == "en"
+        assert captured["kwargs"]["prompt"] == "Adam, Hermes"
+        _, kwargs = backend.call_args
+        assert kwargs["language"] == "en"
+        assert kwargs["prompt"] == "Adam, Hermes"
+
+    def test_hook_values_override_request_values(
+        self, monkeypatch, tmp_path,
+    ):
+        audio = _make_audio(tmp_path)
+        _fake_hooks(monkeypatch, [{"language": "lv", "prompt": "hook glossary"}])
+        backend = MagicMock(return_value={"success": True, "transcript": "sveiki"})
+        cfg_patch, prov_patch = _dispatch_ctx({"provider": "openai"}, "openai")
+
+        with cfg_patch, prov_patch, \
+             patch("tools.transcription_tools._transcribe_openai", backend):
+            transcription_tools.transcribe_audio(
+                audio,
+                language="en",
+                prompt="request glossary",
+            )
+
+        _, kwargs = backend.call_args
+        assert kwargs["language"] == "lv"
+        assert kwargs["prompt"] == "hook glossary"
+
     def test_hook_prompt_wins_over_config_prompt(self, monkeypatch, tmp_path):
         audio = _make_audio(tmp_path)
         _fake_hooks(monkeypatch, [{"prompt": "hook wins"}])

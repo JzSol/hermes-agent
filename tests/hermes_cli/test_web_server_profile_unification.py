@@ -791,10 +791,11 @@ class TestProfileScopedAudio:
 
         seen = {}
 
-        def _fake_transcribe(path):
+        def _fake_transcribe(path, **kwargs):
             from hermes_constants import get_hermes_home
 
             seen["home"] = str(get_hermes_home())
+            seen["kwargs"] = kwargs
             return {"success": True, "transcript": "hi", "provider": "fake"}
 
         monkeypatch.setattr(voice_mode, "transcribe_recording", _fake_transcribe)
@@ -806,6 +807,57 @@ class TestProfileScopedAudio:
         assert resp.status_code == 200
         assert resp.json()["transcript"] == "hi"
         assert seen["home"] == str(isolated_profiles["worker_beta"])
+        assert seen["kwargs"] == {
+            "language": None,
+            "prompt": None,
+            "source": "audio_upload",
+        }
+
+    def test_transcribe_threads_request_language_and_prompt(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        import base64
+
+        import tools.voice_mode as voice_mode
+
+        seen = {}
+
+        def _fake_transcribe(path, **kwargs):
+            seen.update(kwargs)
+            return {"success": True, "transcript": "Adam heard me", "provider": "local"}
+
+        monkeypatch.setattr(voice_mode, "transcribe_recording", _fake_transcribe)
+        payload = base64.b64encode(b"\x00fakeaudio").decode("ascii")
+        resp = client.post(
+            "/api/audio/transcribe",
+            json={
+                "data_url": f"data:audio/wav;base64,{payload}",
+                "language": "en",
+                "prompt": "Adam, Hermes, Ray-Ban",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["transcript"] == "Adam heard me"
+        assert seen == {
+            "language": "en",
+            "prompt": "Adam, Hermes, Ray-Ban",
+            "source": "audio_upload",
+        }
+
+    def test_transcribe_rejects_oversized_prompt(self, client, isolated_profiles):
+        import base64
+
+        payload = base64.b64encode(b"\x00fakeaudio").decode("ascii")
+        resp = client.post(
+            "/api/audio/transcribe",
+            json={
+                "data_url": f"data:audio/wav;base64,{payload}",
+                "prompt": "x" * 897,
+            },
+        )
+
+        assert resp.status_code == 422
 
     def test_audio_endpoints_unknown_profile_404(self, client, isolated_profiles):
         resp = client.get("/api/audio/elevenlabs/voices?profile=ghost")

@@ -95,6 +95,32 @@ class WhatsAppOnboardingApply(BaseModel):
 class AudioTranscriptionRequest(BaseModel):
     data_url: str
     mime_type: Optional[str] = None
+    language: Optional[str] = None
+    prompt: Optional[str] = None
+
+    @field_validator("language")
+    @classmethod
+    def _validate_language(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        language = value.strip()
+        if not language:
+            return None
+        if len(language) > 16 or any(
+            not (character.isalnum() or character == "-")
+            for character in language
+        ):
+            raise ValueError("language must be a short BCP-47-style code")
+        return language
+
+    @field_validator("prompt")
+    @classmethod
+    def _validate_prompt(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        if len(value) > 896:
+            raise ValueError("prompt must be at most 896 characters")
+        return value
 
 
 class ManagedFileUpload(BaseModel):
@@ -752,4 +778,3 @@ class _PluginProvidersPutBody(BaseModel):
 
 class _PluginVisibilityBody(BaseModel):
     hidden: bool
-

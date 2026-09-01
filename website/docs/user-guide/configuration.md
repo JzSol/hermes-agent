@@ -2155,6 +2155,12 @@ stt:
 
 **Composition.** The config value is the base. Plugins that register the [`pre_transcription`](/user-guide/features/hooks#pre_transcription) hook mutate on top of it, last-writer-wins per field. Multiple plugins' hints compose deterministically: plugin discovery loads plugins in sorted order by plugin id, and each plugin's callbacks run in its own registration order, so the same set of plugins always produces the same final prompt. A hook returning an empty string for `prompt` clears the config prompt for that request. Hooks may also override `language` and `model`; `file_path` is read-only and any attempt to change it is logged and dropped. With no hook registered and no `stt.prompt` set, the outgoing request is identical to previous releases.
 
+The relay endpoint also accepts optional `language` and `prompt` fields in a
+JSON `POST /api/audio/transcribe` request. Resolution order is configured
+STT value, then the per-request value, then any `pre_transcription` hook result.
+This lets a client provide short-lived locale and vocabulary hints without
+changing the active Hermes profile.
+
 **Provider support.**
 
 | Provider | Prompt parameter | Behavior |
