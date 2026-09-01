@@ -69,6 +69,7 @@ from __future__ import annotations
 
 import logging
 import os
+import platform
 import re
 import shutil
 import site
@@ -148,6 +149,11 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "sounddevice==0.5.5",
         "numpy==2.4.3",
     ),
+    # Apple Silicon Whisper backend used by the bundled mlx-whisper plugin.
+    # Keep the exact pin inside the manifest's bounded compatibility range.
+    # The first-use ensure call also lets hermes update restore the backend in
+    # a newly-created managed venv after it was enabled previously.
+    "stt.mlx_whisper": ("mlx-whisper==0.4.3",),
     # SILK voice-note decoding (WeChat/QQ .silk voice messages). pilk is a
     # small silk-v3 codec binding; installed on first .silk transcription.
     "stt.silk": ("pilk==0.2.4",),
@@ -549,6 +555,14 @@ def _unsupported_feature_reason(feature: str) -> Optional[str]:
             "which has no Windows wheel and requires make + libolm to build "
             "from sdist. Run Hermes under WSL to use Matrix on Windows."
         )
+    if feature == "stt.mlx_whisper":
+        if sys.platform != "darwin":
+            return "MLX Whisper requires macOS on Apple Silicon"
+        if platform.machine().lower() not in {"arm64", "aarch64"}:
+            return (
+                "MLX Whisper requires a native Apple Silicon Python process; "
+                "Intel Macs and Rosetta use the faster-whisper fallback"
+            )
     return None
 
 
