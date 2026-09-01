@@ -69,8 +69,10 @@ def test_streams_pcm_frames_then_end(stream_client, monkeypatch):
         assert start == {"type": "start", "sample_rate": 24000, "channels": 1}
 
         conn.send_text(json.dumps({"text": "Hello there.", "done": True}))
+        assert conn.receive_json() == {"type": "segment_start"}
         assert conn.receive_bytes() == b"\x01\x02\x03\x04"
         assert conn.receive_bytes() == b"\x05\x06"
+        assert conn.receive_json() == {"type": "segment_end"}
         assert conn.receive_json() == {"type": "end"}
 
     assert streamer.requests == ["Hello there."]
@@ -95,16 +97,26 @@ def test_long_text_is_split_across_provider_requests(stream_client, monkeypatch)
         )
         # One PCM frame per split piece, then end.
         frames = 0
+        segment_starts = 0
+        segment_ends = 0
         while True:
             message = conn.receive()
             if message.get("bytes") is not None:
                 frames += 1
             else:
-                assert json.loads(message["text"]) == {"type": "end"}
-                break
+                frame = json.loads(message["text"])
+                if frame == {"type": "segment_start"}:
+                    segment_starts += 1
+                elif frame == {"type": "segment_end"}:
+                    segment_ends += 1
+                else:
+                    assert frame == {"type": "end"}
+                    break
 
     assert len(streamer.requests) > 1
     assert frames == len(streamer.requests)
+    assert segment_starts == len(streamer.requests)
+    assert segment_ends == len(streamer.requests)
     # Nothing lost in the split: every sentence reached the provider.
     joined = " ".join(streamer.requests)
     for fragment in ("First sentence here.", "Second sentence here.", "Third one."):
@@ -119,5 +131,4 @@ def test_split_text_respects_cap_and_preserves_content():
     joined = " ".join(pieces)
     for word in text.replace(".", "").split():
         assert word in joined
-
 

@@ -171,7 +171,13 @@ When TTS is enabled, the agent speaks its reply **sentence-by-sentence** as it g
 
 1. Buffers text deltas into complete sentences (min 20 chars)
 2. Strips markdown formatting, emoji, and `<think>` blocks
-3. Plays audio per sentence in real-time — providers with a chunked PCM API (ElevenLabs, OpenAI) stream raw audio for the lowest time-to-first-word; every other provider (including the default Edge) synthesizes and plays each sentence as it completes
+3. Plays audio per sentence in real-time — providers with a chunked PCM API (ElevenLabs, OpenAI, and plugins such as Kokoro MLX) stream raw audio for the lowest time-to-first-word; every other provider (including the default Edge) synthesizes and plays each sentence as it completes
+
+The speech WebSocket emits optional `segment_start` and `segment_end` JSON
+frames around each synthesized sentence or provider-sized piece. Existing Web
+Audio clients may ignore them and schedule the PCM continuously; relay clients
+can use the boundaries to queue reliable clip playback without waiting for the
+whole answer.
 
 The same pipeline runs in the classic CLI, the TUI, and the desktop app. In a desktop voice conversation the reply text is fed **live** into a per-reply speech WebSocket as the model generates it, so speech overlaps generation — one socket and one audio clock per reply, no per-sentence connection gaps.
 

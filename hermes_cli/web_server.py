@@ -5748,7 +5748,11 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
 
     stop = threading.Event()
     text_q: queue.Queue = queue.Queue()  # str deltas; None = end-of-text
-    chunks: asyncio.Queue = asyncio.Queue()  # PCM out; None = synthesis done
+    # Queue values are raw PCM, segment-boundary tuples, or None when
+    # synthesis is complete. Boundaries let low-resource relay clients use
+    # reliable clip players sentence-by-sentence while Web Audio clients can
+    # continue treating the PCM as one gapless stream.
+    chunks: asyncio.Queue = asyncio.Queue()
 
     def _produce():
         from tools.tts_streaming import SentenceChunker
@@ -5792,10 +5796,18 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
                 if not cleaned:
                     continue
                 for piece in _split_text_for_speak_stream(cleaned, cap):
-                    for chunk in streamer.stream(piece):
-                        if stop.is_set():
-                            return
-                        loop.call_soon_threadsafe(chunks.put_nowait, chunk)
+                    loop.call_soon_threadsafe(
+                        chunks.put_nowait, ("segment_start",)
+                    )
+                    try:
+                        for chunk in streamer.stream(piece):
+                            if stop.is_set():
+                                return
+                            loop.call_soon_threadsafe(chunks.put_nowait, chunk)
+                    finally:
+                        loop.call_soon_threadsafe(
+                            chunks.put_nowait, ("segment_end",)
+                        )
         except Exception as exc:
             _log.warning("speak-stream synthesis failed: %s", exc)
         finally:
@@ -5826,7 +5838,10 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
             chunk = await chunks.get()
             if chunk is None:
                 break
-            await ws.send_bytes(chunk)
+            if isinstance(chunk, tuple):
+                await ws.send_json({"type": chunk[0]})
+            else:
+                await ws.send_bytes(chunk)
         if not stop.is_set():
             await ws.send_json({"type": "end"})
     except (WebSocketDisconnect, RuntimeError):
