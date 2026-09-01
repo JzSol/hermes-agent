@@ -4,6 +4,21 @@ Instructions for AI coding assistants and developers working on the hermes-agent
 
 **Never give up on the right solution.**
 
+## Owner Delivery Policy for This Fork
+
+For work requested by the owner of `JzSol/hermes-agent`, work directly on the
+local `main` branch and publish completed tasks to `fork/main`. Do not create a
+managed feature branch or pull request unless the owner explicitly overrides
+this policy for that task.
+
+After the relevant checks pass, review and stage only task-owned paths, create
+a Conventional Commit, fetch and safely integrate upstream and fork `main`,
+then push `fork/main` without another confirmation. Verify the remote SHA after
+the push. Never force-push, discard unrelated work, commit credentials or local
+agent state, or guess through a conflict. "Automatic push" means once per
+verified task, not after every file save; a failed gate or ownership conflict
+stops publication.
+
 ## What Hermes Is
 
 Hermes is a personal AI agent that runs the same agent core across a CLI, a
